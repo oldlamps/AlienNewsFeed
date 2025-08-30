@@ -16,7 +16,7 @@ I designed this project to fulfill a need that I couldn't get anywhere else in a
 * **Clean Terminal UI**: A smooth, keyboard-driven interface for browsing articles.
 * **Persistent Storage**: Uses an SQLite database to store articles, keeping track of read, new, and bookmarked items between sessions.
 * **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view.
-* **Powerful Actions**:
+* **Flexible Actions**:
     * Open articles or comment threads in your default web browser.
     * Instantly summarize any article with with links to [Perplexity AI](https://www.perplexity.ai/).
 * **Customization & Settings**:
