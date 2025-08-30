@@ -76,6 +76,8 @@ except ImportError:
 class Colors:
     RESET, BOLD, CYAN = '\033[0m', '\033[1m', '\033[96m'
     YELLOW, LIGHT_GREY, GREEN = '\033[93m', '\033[38;5;248m', '\033[92m'
+    MAGENTA = '\033[95m'
+    BLUE = '\033[94m'
 
 THEMES = {
     "Default": {
@@ -87,6 +89,21 @@ THEMES = {
         "highlight_bg": '\x1b[48;5;235m', "highlight_fg": '\x1b[97m',
         "bar_bg": '\x1b[47m', "bar_fg": '\x1b[30m',
         "popup_bg": '\x1b[47m', "popup_fg": '\x1b[30m'
+    },
+    "Solarized Dark": {
+        "highlight_bg": '\x1b[48;5;22m', "highlight_fg": '\x1b[38;5;228m', # Dark Green BG, Light Yellow FG
+        "bar_bg": '\x1b[48;5;234m', "bar_fg": '\x1b[38;5;248m',       # Darker Grey BG, Light Grey FG
+        "popup_bg": '\x1b[48;5;235m', "popup_fg": '\x1b[38;5;250m'    # Dark Grey BG, Lighter Grey FG
+    },
+    "Dracula": {
+        "highlight_bg": '\x1b[48;5;55m', "highlight_fg": '\x1b[38;5;199m', # Purple BG, Pink FG
+        "bar_bg": '\x1b[48;5;234m', "bar_fg": '\x1b[38;5;177m',      # Dark Grey BG, Light Purple FG
+        "popup_bg": '\x1b[48;5;235m', "popup_fg": '\x1b[97m'         # Dark Grey BG, White FG
+    },
+    "Paper": {
+        "highlight_bg": '\x1b[48;5;94m', "highlight_fg": '\x1b[97m',       # Brown BG, White FG
+        "bar_bg": '\x1b[48;5;239m', "bar_fg": '\x1b[97m',       # Dark Grey BG, White FG
+        "popup_bg": '\x1b[48;5;252m', "popup_fg": '\x1b[30m'        # Light Grey BG, Black FG
     }
 }
 
@@ -105,6 +122,7 @@ CONFIG_FILE = CONFIG_DIR / "config.ini"
 PAGE_JUMP = 10
 SUBREDDITS_STRING = "news+worldnews+politics+technology"
 FETCH_INTERVAL_SECONDS = 60
+SHOW_CLOCK = True
 
 # --- Globals ---
 data_lock = threading.Lock()
@@ -114,20 +132,22 @@ ARTICLES_UPDATED, HAS_NEW_ARTICLES = threading.Event(), False
 # --- Settings Management ---
 def load_settings():
     """Loads settings from config.ini, creating it with defaults if it doesn't exist."""
-    global FETCH_INTERVAL_SECONDS, SUBREDDITS_STRING
+    global FETCH_INTERVAL_SECONDS, SUBREDDITS_STRING, SHOW_CLOCK
     config = configparser.ConfigParser()
+    defaults = {'Theme': 'Default', 'FetchInterval': '60', 'Subreddits': SUBREDDITS_STRING, 'ShowClock': 'true'}
     if not CONFIG_FILE.exists():
-        config['Settings'] = {'Theme': 'Default', 'FetchInterval': '60', 'Subreddits': SUBREDDITS_STRING}
+        config['Settings'] = defaults
         with open(CONFIG_FILE, 'w') as f: config.write(f)
     config.read(CONFIG_FILE)
     FETCH_INTERVAL_SECONDS = config.getint('Settings', 'FetchInterval', fallback=60)
     SUBREDDITS_STRING = config.get('Settings', 'Subreddits', fallback=SUBREDDITS_STRING)
+    SHOW_CLOCK = config.getboolean('Settings', 'ShowClock', fallback=True)
     return config.get('Settings', 'Theme', fallback='Default')
 
-def save_settings(theme_name, fetch_interval, subreddits):
+def save_settings(theme_name, fetch_interval, subreddits, show_clock):
     """Saves the current settings to config.ini."""
     config = configparser.ConfigParser()
-    config['Settings'] = {'Theme': theme_name, 'FetchInterval': str(fetch_interval), 'Subreddits': subreddits}
+    config['Settings'] = {'Theme': theme_name, 'FetchInterval': str(fetch_interval), 'Subreddits': subreddits, 'ShowClock': str(show_clock)}
     with open(CONFIG_FILE, 'w') as f: config.write(f)
 
 # --- Database Functions ---
@@ -202,7 +222,7 @@ def fetch_articles_threaded():
         HAS_NEW_ARTICLES = False
         try:
             url = f"https://www.reddit.com/r/{SUBREDDITS_STRING}/new.json?limit=50"
-            headers = {"User-Agent": "live_news_feed_script/2.3"}
+            headers = {"User-Agent": "live_news_feed_script/2.6"}
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json()
@@ -216,7 +236,7 @@ def fetch_articles_threaded():
         time.sleep(FETCH_INTERVAL_SECONDS)
 
 class NewsFeedMenu:
-    def __init__(self, title="Live Reddit News Feed"):
+    def __init__(self, title="👽 Alien News Feed"):
         self.title, self.is_running, self.needs_redraw = title, True, True
         self.all_articles = []
 
@@ -235,6 +255,8 @@ class NewsFeedMenu:
         self.theme = THEMES[self.theme_names[self.current_theme_index]]
         self.fetch_interval_setting = FETCH_INTERVAL_SECONDS
         self.subreddits_setting = SUBREDDITS_STRING
+        self.show_clock_setting = SHOW_CLOCK
+        self.last_displayed_minute = -1
 
         self.action_menu_article = None
         self.action_menu_selected_index = 0
@@ -257,7 +279,7 @@ class NewsFeedMenu:
     def _fetch_comments_threaded(self, permalink):
         if not permalink: self.comment_view_status, self.needs_redraw = "Error: No permalink.", True; return
         try:
-            url, headers = f"https://www.reddit.com{permalink.rstrip('/')}.json", {"User-Agent": "live_news_feed_script/2.3"}
+            url, headers = f"https://www.reddit.com{permalink.rstrip('/')}.json", {"User-Agent": "live_news_feed_script/2.6"}
             response = requests.get(url, headers=headers, timeout=10); response.raise_for_status()
             raw_comments = response.json()[1].get("data", {}).get("children", [])
             if not raw_comments: self.comment_view_status = "No comments found."
@@ -287,7 +309,7 @@ class NewsFeedMenu:
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        pop_w, pop_h = 70, 9
+        pop_w, pop_h = 70, 10
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
@@ -296,10 +318,12 @@ class NewsFeedMenu:
         sys.stdout.write(f'\x1b[{start_y+pop_h-1};{start_x}H└' + '─'*(pop_w-2) + '┘')
 
         sub_text = self.subreddits_setting
-        if self.settings_selected_index == 2: sub_text += "_"
+        if self.settings_selected_index == 3: sub_text += "_"
+        clock_status = "< Enabled >" if self.show_clock_setting else "< Disabled >"
         settings = [
             f"Refresh Time (s): < {self.fetch_interval_setting} > (Restart required)",
             f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
+            f"Show Clock: {clock_status}",
             f"Subreddits: {sub_text}",
             "Export Database (Not implemented)", "Import Database (Not implemented)"
         ]
@@ -357,7 +381,15 @@ class NewsFeedMenu:
         title = self.title
         if self.is_bookmarks_view: title += " [Bookmarks]"
         if self.is_search_view: title += f" [Search: {self.search_query}]"
-        sys.stdout.write(f'\x1b[1;1H{title}')
+
+        if self.show_clock_setting:
+            current_time = time.strftime("%A, %B %d, %Y %I:%M %p")
+            # The +1 compensates for the visual width of the emoji
+            padding = ' ' * max(0, term_w - (len(title) + 1) - len(current_time))
+            full_title_bar = f"{title}{padding}{current_time}"
+        else:
+            full_title_bar = title
+        sys.stdout.write(f'\x1b[1;1H{full_title_bar}')
 
         HL_BG, FG_HL, BG_BAR, FG_BAR = self.theme['highlight_bg'], self.theme['highlight_fg'], self.theme['bar_bg'], self.theme['bar_fg']
 
@@ -400,6 +432,12 @@ class NewsFeedMenu:
                         if HAS_NEW_ARTICLES: self.selected_index, self.scroll_top, HAS_NEW_ARTICLES = 0,0,False
                 self.needs_redraw = True; ARTICLES_UPDATED.clear()
 
+            if self.show_clock_setting:
+                current_minute = time.localtime().tm_min
+                if current_minute != self.last_displayed_minute:
+                    self.last_displayed_minute = current_minute
+                    self.needs_redraw = True
+
             items_data = self.all_articles
             if self.is_bookmarks_view:
                 items_data = [a for a in self.all_articles if a['is_bookmarked']]
@@ -417,73 +455,76 @@ class NewsFeedMenu:
             key = getch()
             if not key: continue
 
-            # --- MODIFIED: Refactored input handling to be mutually exclusive ---
-            if self.is_action_menu_view:
-                if key == "ESC": self.is_action_menu_view = False
-                elif key == "UP": self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
-                elif key == "DOWN": self.action_menu_selected_index = min(2, self.action_menu_selected_index + 1)
-                elif key == "ENTER":
-                    if self.action_menu_selected_index == 0: webbrowser.open(self.action_menu_article['url'])
-                    elif self.action_menu_selected_index == 1: webbrowser.open(f"https://www.reddit.com{self.action_menu_article['permalink']}")
-                    elif self.action_menu_selected_index == 2:
-                        query = f"summarize {self.action_menu_article['url']}"
-                        webbrowser.open(f"https://www.perplexity.ai/?s=o&q={quote(query)}")
-                    self.is_action_menu_view = False
-                self.needs_redraw = True
+            if self.is_action_menu_view: self.handle_action_menu_input(key)
+            elif self.is_settings_view: self.handle_settings_input(key)
+            elif self.is_comment_view: self.handle_comment_view_input(key)
+            elif self.is_search_view: self.handle_search_input(key, items_data)
+            else: self.handle_main_view_input(key, items_data)
 
-            elif self.is_settings_view:
-                if key == "ESC":
-                    save_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.subreddits_setting)
-                    self.is_settings_view = False
-                elif key == "UP": self.settings_selected_index = max(0, self.settings_selected_index - 1)
-                elif key == "DOWN": self.settings_selected_index = min(4, self.settings_selected_index + 1)
-                elif self.settings_selected_index == 0:
-                    if key == "LEFT": self.fetch_interval_setting = max(15, self.fetch_interval_setting - 15)
-                    elif key == "RIGHT": self.fetch_interval_setting += 15
-                elif self.settings_selected_index == 1:
-                    if key == "LEFT" or key == "RIGHT":
-                        self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_names)
-                        self.theme = THEMES[self.theme_names[self.current_theme_index]]
-                elif self.settings_selected_index == 2:
-                    if key == "BACKSPACE": self.subreddits_setting = self.subreddits_setting[:-1]
-                    elif len(key) == 1 and key.isprintable(): self.subreddits_setting += key
-                self.needs_redraw = True
+    def handle_action_menu_input(self, key):
+        if key == "ESC": self.is_action_menu_view = False
+        elif key == "UP": self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
+        elif key == "DOWN": self.action_menu_selected_index = min(2, self.action_menu_selected_index + 1)
+        elif key == "ENTER":
+            if self.action_menu_selected_index == 0: webbrowser.open(self.action_menu_article['url'])
+            elif self.action_menu_selected_index == 1: webbrowser.open(f"https://www.reddit.com{self.action_menu_article['permalink']}")
+            elif self.action_menu_selected_index == 2:
+                query = f"summarize {self.action_menu_article['url']}"
+                webbrowser.open(f"https://www.perplexity.ai/?s=o&q={quote(query)}")
+            self.is_action_menu_view = False
+        self.needs_redraw = True
 
-            elif self.is_comment_view:
-                if self.visible_comments:
-                    original_index = self.comment_selected_index
-                    if key == "UP": self.comment_selected_index = max(0, self.comment_selected_index - 1)
-                    elif key == "DOWN": self.comment_selected_index = min(len(self.visible_comments) - 1, self.comment_selected_index + 1)
-                    elif key == 'j':
-                        for i in range(self.comment_selected_index - 1, -1, -1):
-                            if self.visible_comments[i].depth == 0: self.comment_selected_index = i; break
-                    elif key == 'k':
-                        for i in range(self.comment_selected_index + 1, len(self.visible_comments)):
-                            if self.visible_comments[i].depth == 0: self.comment_selected_index = i; break
-                    elif key == "ENTER":
-                        selected_comment = self.visible_comments[self.comment_selected_index]
-                        if selected_comment.children:
-                            selected_comment.is_collapsed = not selected_comment.is_collapsed
-                            self.needs_redraw = True
-                    if original_index != self.comment_selected_index: self.needs_redraw = True
-                if key == "ESC":
-                    self.is_comment_view, self.comment_tree = False, []
+    def handle_settings_input(self, key):
+        if key == "ESC":
+            save_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.subreddits_setting, self.show_clock_setting)
+            self.is_settings_view = False
+        elif key == "UP": self.settings_selected_index = max(0, self.settings_selected_index - 1)
+        elif key == "DOWN": self.settings_selected_index = min(5, self.settings_selected_index + 1)
+        elif self.settings_selected_index == 0:
+            if key == "LEFT": self.fetch_interval_setting = max(15, self.fetch_interval_setting - 15)
+            elif key == "RIGHT": self.fetch_interval_setting += 15
+        elif self.settings_selected_index == 1:
+            if key == "LEFT" or key == "RIGHT":
+                self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_names)
+                self.theme = THEMES[self.theme_names[self.current_theme_index]]
+        elif self.settings_selected_index == 2:
+            if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
+        elif self.settings_selected_index == 3:
+            if key == "BACKSPACE": self.subreddits_setting = self.subreddits_setting[:-1]
+            elif len(key) == 1 and key.isprintable(): self.subreddits_setting += key
+        self.needs_redraw = True
+
+    def handle_comment_view_input(self, key):
+        if self.visible_comments:
+            original_index = self.comment_selected_index
+            if key == "UP": self.comment_selected_index = max(0, self.comment_selected_index - 1)
+            elif key == "DOWN": self.comment_selected_index = min(len(self.visible_comments) - 1, self.comment_selected_index + 1)
+            elif key == 'j':
+                for i in range(self.comment_selected_index - 1, -1, -1):
+                    if self.visible_comments[i].depth == 0: self.comment_selected_index = i; break
+            elif key == 'k':
+                for i in range(self.comment_selected_index + 1, len(self.visible_comments)):
+                    if self.visible_comments[i].depth == 0: self.comment_selected_index = i; break
+            elif key == "ENTER":
+                selected_comment = self.visible_comments[self.comment_selected_index]
+                if selected_comment.children:
+                    selected_comment.is_collapsed = not selected_comment.is_collapsed
                     self.needs_redraw = True
+            if original_index != self.comment_selected_index: self.needs_redraw = True
+        if key == "ESC":
+            self.is_comment_view, self.comment_tree = False, []
+            self.needs_redraw = True
 
-            elif self.is_search_view:
-                if key == "ESC":
-                    self.is_search_view = False
-                    self.search_query = ""
-                elif key == "BACKSPACE":
-                    self.search_query = self.search_query[:-1]
-                elif len(key) == 1 and key.isprintable():
-                    self.search_query += key
-                else: # Pass through other keys to main handler
-                    self.handle_main_view_input(key, items_data)
-                self.needs_redraw = True
-
-            else: # Main view handler
-                self.handle_main_view_input(key, items_data)
+    def handle_search_input(self, key, items_data):
+        if key == "ESC":
+            self.is_search_view, self.search_query = False, ""
+        elif key == "BACKSPACE":
+            self.search_query = self.search_query[:-1]
+        elif len(key) == 1 and key.isprintable():
+            self.search_query += key
+        else:
+            self.handle_main_view_input(key, items_data)
+        self.needs_redraw = True
 
     def handle_main_view_input(self, key, items_data):
         """Handles all key presses for the main article list view."""
@@ -527,7 +568,6 @@ class NewsFeedMenu:
                     newly_selected['is_new'] = False
                     update_article_status(url=newly_selected['url'], is_new=False)
         self.needs_redraw = True
-
 
 # --- Main Execution ---
 if __name__ == '__main__':
