@@ -4,6 +4,12 @@ A customizable, terminal-based news reader that aggregates articles from your fa
 
 ---
 
+## Philophy & Motivation
+
+I designed this project to fulfill a need that I couldn't get anywhere else in a way I wanted. What's the point? Well one reason is I feel Reddit is uniquely curated in a way RSS feeds are not. Having a steady flow of articles from your favorite subreddits cataloged in a private database, searchable, bookmarkable and exportable was a really appealing idea. Hope you get some use out of what I'm trying to accomplish. Remember to be respectful of the Reddit API and don't poll too often.
+
+-- Old Lamps
+
 ## Features
 
 * **Live Reddit Feed**: Fetches the latest articles from any combination of subreddits (e.g., `news+worldnews+technology`).
