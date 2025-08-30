@@ -11,6 +11,8 @@ import sqlite3
 import textwrap
 import configparser
 import webbrowser
+import shutil
+import argparse
 from pathlib import Path
 from urllib.parse import urlparse, quote
 
@@ -128,26 +130,40 @@ SHOW_CLOCK = True
 data_lock = threading.Lock()
 last_checked_time = "Never"
 ARTICLES_UPDATED, HAS_NEW_ARTICLES = threading.Event(), False
+BLOCKED_DOMAINS = set()
 
 # --- Settings Management ---
 def load_settings():
     """Loads settings from config.ini, creating it with defaults if it doesn't exist."""
-    global FETCH_INTERVAL_SECONDS, SUBREDDITS_STRING, SHOW_CLOCK
+    global FETCH_INTERVAL_SECONDS, SUBREDDITS_STRING, SHOW_CLOCK, BLOCKED_DOMAINS
     config = configparser.ConfigParser()
-    defaults = {'Theme': 'Default', 'FetchInterval': '60', 'Subreddits': SUBREDDITS_STRING, 'ShowClock': 'true'}
+    defaults = {
+        'Theme': 'Default', 'FetchInterval': '60', 'Subreddits': SUBREDDITS_STRING,
+        'ShowClock': 'true', 'BlockedDomains': ''
+    }
     if not CONFIG_FILE.exists():
         config['Settings'] = defaults
         with open(CONFIG_FILE, 'w') as f: config.write(f)
     config.read(CONFIG_FILE)
-    FETCH_INTERVAL_SECONDS = config.getint('Settings', 'FetchInterval', fallback=60)
-    SUBREDDITS_STRING = config.get('Settings', 'Subreddits', fallback=SUBREDDITS_STRING)
-    SHOW_CLOCK = config.getboolean('Settings', 'ShowClock', fallback=True)
-    return config.get('Settings', 'Theme', fallback='Default')
+    settings = config['Settings']
+    FETCH_INTERVAL_SECONDS = settings.getint('FetchInterval', 60)
+    SUBREDDITS_STRING = settings.get('Subreddits', SUBREDDITS_STRING)
+    SHOW_CLOCK = settings.getboolean('ShowClock', True)
 
-def save_settings(theme_name, fetch_interval, subreddits, show_clock):
+    blocked_str = settings.get('BlockedDomains', '')
+    BLOCKED_DOMAINS = {domain.strip() for domain in blocked_str.split(',') if domain.strip()}
+
+    return settings.get('Theme', 'Default')
+
+def save_settings(theme_name, fetch_interval, subreddits, show_clock, blocked_domains):
     """Saves the current settings to config.ini."""
     config = configparser.ConfigParser()
-    config['Settings'] = {'Theme': theme_name, 'FetchInterval': str(fetch_interval), 'Subreddits': subreddits, 'ShowClock': str(show_clock)}
+    blocked_domains_str = ','.join(sorted(list(blocked_domains)))
+    config['Settings'] = {
+        'Theme': theme_name, 'FetchInterval': str(fetch_interval),
+        'Subreddits': subreddits, 'ShowClock': str(show_clock),
+        'BlockedDomains': blocked_domains_str
+    }
     with open(CONFIG_FILE, 'w') as f: config.write(f)
 
 # --- Database Functions ---
@@ -174,7 +190,7 @@ def add_article_to_db(article):
         cursor = conn.cursor()
         cursor.execute('INSERT OR IGNORE INTO articles VALUES (?,?,?,?,?,?,?,?,?)', (
             article['url'], article['title'], article['subreddit'], domain,
-            article['permalink'], article['created_utc'], 0, 0, 1)) # read, bookmarked, new
+            article['permalink'], article['created_utc'], 0, 0, 1))
         if cursor.rowcount > 0:
             with data_lock: HAS_NEW_ARTICLES = True
         conn.commit()
@@ -183,7 +199,13 @@ def get_articles_from_db():
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM articles ORDER BY created_utc DESC")
+        if not BLOCKED_DOMAINS:
+            query = "SELECT * FROM articles ORDER BY created_utc DESC"
+            cursor.execute(query)
+        else:
+            placeholders = ','.join('?' for domain in BLOCKED_DOMAINS)
+            query = f"SELECT * FROM articles WHERE source_domain NOT IN ({placeholders}) ORDER BY created_utc DESC"
+            cursor.execute(query, tuple(BLOCKED_DOMAINS))
         return [dict(row) for row in cursor.fetchall()]
 
 def update_article_status(url, is_read=None, is_bookmarked=None, is_new=None):
@@ -228,8 +250,11 @@ def fetch_articles_threaded():
             data = response.json()
             for post in data.get("data", {}).get("children", []):
                 post_data = post.get("data", {})
-                if not post_data.get("is_self") and post_data.get("url"):
+                domain = get_domain_from_url(post_data.get("url"))
+
+                if not post_data.get("is_self") and post_data.get("url") and domain not in BLOCKED_DOMAINS:
                     add_article_to_db({k: post_data.get(k) for k in ["title", "url", "subreddit", "created_utc", "permalink"]})
+
             last_checked_time = time.strftime("%H:%M:%S")
             ARTICLES_UPDATED.set()
         except requests.exceptions.RequestException: pass
@@ -242,7 +267,9 @@ class NewsFeedMenu:
 
         self.is_comment_view, self.is_settings_view = False, False
         self.is_action_menu_view, self.is_bookmarks_view = False, False
+        self.is_help_view, self.is_import_view = False, False
         self.is_search_view, self.search_query = False, ""
+        self.search_input_active = False
         self.selected_index, self.scroll_top = 0, 0
 
         self.comment_tree, self.visible_comments = [], []
@@ -256,10 +283,25 @@ class NewsFeedMenu:
         self.fetch_interval_setting = FETCH_INTERVAL_SECONDS
         self.subreddits_setting = SUBREDDITS_STRING
         self.show_clock_setting = SHOW_CLOCK
+        self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
         self.last_displayed_minute = -1
+
+        self.status_message = ""
+        self.status_message_timer = 0
 
         self.action_menu_article = None
         self.action_menu_selected_index = 0
+
+    def _copy_to_clipboard(self, text):
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["clip"], input=text.strip().encode('utf-8'), check=True)
+            elif sys.platform == "darwin":
+                subprocess.run(["pbcopy"], input=text.strip().encode('utf-8'), check=True)
+            else:
+                subprocess.run(["xclip", "-selection", "clipboard"], input=text.strip().encode('utf-8'), check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pass
 
     def _parse_comments_to_tree(self, comments_json, depth=0):
         tree = []
@@ -288,10 +330,75 @@ class NewsFeedMenu:
         except (requests.exceptions.RequestException, IndexError, KeyError) as e: self.comment_view_status = f"Error: {e}"
         self.needs_redraw = True
 
+    def _draw_import_instructions(self, items_data):
+        self._draw(items_data, is_background=True)
+        term_w, term_h = os.get_terminal_size()
+        pop_w, pop_h = 74, 11
+        start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
+
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+        sys.stdout.write(f'{pop_bg}')
+        sys.stdout.write(f'\x1b[{start_y};{start_x}H┌' + '─'*(pop_w-2) + '┐')
+        for i in range(pop_h - 2):
+            sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x}H│{" " * (pop_w - 2)}│')
+        sys.stdout.write(f'\x1b[{start_y + pop_h - 1};{start_x}H└' + '─'*(pop_w-2) + '┘')
+
+        content = [
+            f"{Colors.YELLOW}Your config folder has been opened.",
+            f"{pop_fg}To restore a backup, you can either:",
+            f"{Colors.BOLD}A) Manually replace the database file:{pop_fg}",
+            f"  1. Close this application.",
+            f"  2. In the folder that opened, replace 'news_feed.db' with your backup.",
+            f"{Colors.BOLD}B) Use the command-line option on next launch:{pop_fg}",
+            f"  > python main.py --import /path/to/your/backup.db",
+            f"",
+            f"{Colors.CYAN}Press [ESC] to dismiss this message.{pop_fg}"
+        ]
+        for i, line in enumerate(content):
+            sys.stdout.write(f"\x1b[{start_y + 1 + i};{start_x + 2}H{pop_bg}{line.ljust(pop_w - 4)}{Colors.RESET}")
+        sys.stdout.flush()
+
+    def _draw_help_menu(self, items_data):
+        self._draw(items_data, is_background=True)
+        term_w, term_h = os.get_terminal_size()
+        pop_w, pop_h = 70, 16
+        start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
+
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+        sys.stdout.write(f'{pop_bg}')
+        sys.stdout.write(f'\x1b[{start_y};{start_x}H┌' + '─'*(pop_w-2) + '┐')
+        for i in range(pop_h - 2):
+            sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x}H│{" " * (pop_w - 2)}│')
+        sys.stdout.write(f'\x1b[{start_y + pop_h - 1};{start_x}H└' + '─'*(pop_w-2) + '┘')
+
+        key_color, desc_color, header_color = Colors.YELLOW, pop_fg, Colors.CYAN
+
+        content = [
+            f"{header_color}== Navigation ==",
+            f"  {key_color}[↑/↓]{desc_color}     - Navigate articles",
+            f"  {key_color}[←/→]{desc_color}     - Page up/down",
+            f"{header_color}== Actions ==",
+            f"  {key_color}[Enter]{desc_color}   - Open Action Menu for selected article",
+            f"  {key_color}[b]{desc_color}       - Bookmark/unbookmark an article",
+            f"  {key_color}[c]{desc_color}       - View article comments in-app",
+            f"{header_color}== Views & Modes ==",
+            f"  {key_color}[/]{desc_color}       - Enter search mode (Press Enter to browse results)",
+            f"  {key_color}[v]{desc_color}       - Toggle bookmarks-only view",
+            f"  {key_color}[s]{desc_color}       - Open settings",
+            f"  {key_color}[h]{desc_color}       - Show this help screen",
+            f"  {key_color}[ESC]{desc_color}     - Go back, clear search, or quit",
+            f"",
+            f"{Colors.LIGHT_GREY}      Alien News Feed v2.8 - Created by You!"
+        ]
+
+        for i, line in enumerate(content):
+            sys.stdout.write(f"\x1b[{start_y + 1 + i};{start_x + 2}H{pop_bg}{line}{Colors.RESET}")
+        sys.stdout.flush()
+
     def _draw_action_menu(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        pop_w, pop_h = 50, 7
+        pop_w, pop_h = 50, 11
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
@@ -299,17 +406,35 @@ class NewsFeedMenu:
         for i in range(pop_h-2): sys.stdout.write(f'\x1b[{start_y+1+i};{start_x}H│{" "*(pop_w-2)}│')
         sys.stdout.write(f'\x1b[{start_y+pop_h-1};{start_x}H└' + '─'*(pop_w-2) + '┘')
 
-        options = ["Open Article in Browser", "Open Comments in Browser", "Summarize with Perplexity"]
+        options = [
+            "Open Article in Browser", "Open Comments in Browser", "Summarize with Perplexity",
+            "Copy URL to Clipboard", "Archive Page (archive.is)", "Exclude this domain"
+        ]
+
+        sep1_pos, sep2_pos = 3, 5
+
         for i, option in enumerate(options):
-            row, text = start_y+2+i, option.center(pop_w - 4)
-            if i == self.action_menu_selected_index: sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{text}{Colors.RESET}")
-            else: sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text}{Colors.RESET}")
+            row_offset = 0
+            if i >= sep1_pos: row_offset += 1
+            if i >= sep2_pos: row_offset += 1
+            row = start_y + 2 + i + row_offset
+
+            if i == sep1_pos:
+                sys.stdout.write(f"\x1b[{start_y+2+i};{start_x+2}H{pop_bg}{pop_fg}{'─'*(pop_w-4)}{Colors.RESET}")
+            if i == sep2_pos:
+                sys.stdout.write(f"\x1b[{start_y+2+i+1};{start_x+2}H{pop_bg}{pop_fg}{'─'*(pop_w-4)}{Colors.RESET}")
+
+            text = option.center(pop_w - 4)
+            if i == self.action_menu_selected_index:
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{text}{Colors.RESET}")
+            else:
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text}{Colors.RESET}")
         sys.stdout.flush()
 
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        pop_w, pop_h = 70, 10
+        pop_w, pop_h = 70, 13
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
@@ -319,18 +444,39 @@ class NewsFeedMenu:
 
         sub_text = self.subreddits_setting
         if self.settings_selected_index == 3: sub_text += "_"
+        blocked_text = self.blocked_domains_setting
+        if self.settings_selected_index == 4: blocked_text += "_"
         clock_status = "< Enabled >" if self.show_clock_setting else "< Disabled >"
-        settings = [
-            f"Refresh Time (s): < {self.fetch_interval_setting} > (Restart required)",
+
+        options = [
+            f"Refresh Time (s): < {self.fetch_interval_setting} >",
             f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
             f"Show Clock: {clock_status}",
             f"Subreddits: {sub_text}",
-            "Export Database (Not implemented)", "Import Database (Not implemented)"
+            f"Blocked Domains: {blocked_text}",
+            "SEPARATOR",
+            "Export Bookmarks to HTML",
+            "Export Full Backup",
+            "Import from Backup"
         ]
-        for i, option in enumerate(settings):
-            row, text = start_y+2+i, option.ljust(pop_w - 4)
-            if i == self.settings_selected_index: sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{text}{Colors.RESET}")
-            else: sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text}{Colors.RESET}")
+
+        divider_pos = 5
+
+        for i, option in enumerate(options):
+            if i == divider_pos:
+                sys.stdout.write(f"\x1b[{start_y+2+i};{start_x+2}H{pop_bg}{pop_fg}{'─'*(pop_w-4)}{Colors.RESET}")
+                continue
+
+            row = start_y + 2 + i
+            text = option.ljust(pop_w - 4)
+
+            logical_index = i
+            if i > divider_pos: logical_index -= 1
+
+            if logical_index == self.settings_selected_index:
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{text}{Colors.RESET}")
+            else:
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text}{Colors.RESET}")
         sys.stdout.flush()
 
     def _draw_comments(self, items_data):
@@ -384,7 +530,6 @@ class NewsFeedMenu:
 
         if self.show_clock_setting:
             current_time = time.strftime("%A, %B %d, %Y %I:%M %p")
-            # The +1 compensates for the visual width of the emoji
             padding = ' ' * max(0, term_w - (len(title) + 1) - len(current_time))
             full_title_bar = f"{title}{padding}{current_time}"
         else:
@@ -411,10 +556,15 @@ class NewsFeedMenu:
                 else: sys.stdout.write(f'\x1b[{row};1H{line.ljust(term_w)}{Colors.RESET}')
         footer_row = term_h
 
-        if self.is_search_view:
-            help_text = f"Search: {self.search_query}_"
+        if self.status_message_timer > 0:
+             help_text = self.status_message
+        elif self.is_search_view:
+            if self.search_input_active:
+                help_text = f"Search: {self.search_query}_"
+            else:
+                help_text = f"Browsing search. [/] Edit | [ESC] Clear"
         else:
-            help_text = "[v]Bookmarks [/]Search |[b]Mark |[c]Comments |[s]Settings |[↵]Actions |[ESC]Quit"
+            help_text = "[v]Bkmrks [/]Srch |[b]Mark [c]Cmnts |[s]Settings [h]Help |[↵]Actions |[ESC]Quit"
 
         last_checked = f"Last checked: {last_checked_time}"
         padding = ' ' * max(0, term_w-len(help_text)-len(last_checked)-2)
@@ -422,9 +572,15 @@ class NewsFeedMenu:
         sys.stdout.flush()
 
     def show(self):
-        global HAS_NEW_ARTICLES, FETCH_INTERVAL_SECONDS
+        global HAS_NEW_ARTICLES
         self.all_articles = get_articles_from_db()
         while self.is_running:
+            if self.status_message_timer > 0:
+                self.status_message_timer -= 1
+                if self.status_message_timer == 0:
+                    self.status_message = ""
+                    self.needs_redraw = True
+
             if ARTICLES_UPDATED.is_set():
                 if HAS_NEW_ARTICLES:
                     self.all_articles = get_articles_from_db()
@@ -449,6 +605,8 @@ class NewsFeedMenu:
                 if self.is_action_menu_view: self._draw_action_menu(items_data)
                 elif self.is_settings_view: self._draw_settings(items_data)
                 elif self.is_comment_view: self._draw_comments(items_data)
+                elif self.is_help_view: self._draw_help_menu(items_data)
+                elif self.is_import_view: self._draw_import_instructions(items_data)
                 else: self._draw(items_data)
                 self.needs_redraw = False
 
@@ -458,40 +616,99 @@ class NewsFeedMenu:
             if self.is_action_menu_view: self.handle_action_menu_input(key)
             elif self.is_settings_view: self.handle_settings_input(key)
             elif self.is_comment_view: self.handle_comment_view_input(key)
-            elif self.is_search_view: self.handle_search_input(key, items_data)
+            elif self.is_help_view: self.handle_help_view_input(key)
+            elif self.is_import_view: self.handle_import_view_input(key)
+            elif self.is_search_view: self.handle_search_view_input(key, items_data)
             else: self.handle_main_view_input(key, items_data)
+
+    def handle_import_view_input(self, key):
+        if key == "ESC":
+            self.is_import_view = False
+        self.needs_redraw = True
+
+    def handle_help_view_input(self, key):
+        if key == "ESC" or key == "h":
+            self.is_help_view = False
+        self.needs_redraw = True
 
     def handle_action_menu_input(self, key):
         if key == "ESC": self.is_action_menu_view = False
         elif key == "UP": self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
-        elif key == "DOWN": self.action_menu_selected_index = min(2, self.action_menu_selected_index + 1)
+        elif key == "DOWN": self.action_menu_selected_index = min(5, self.action_menu_selected_index + 1)
         elif key == "ENTER":
-            if self.action_menu_selected_index == 0: webbrowser.open(self.action_menu_article['url'])
-            elif self.action_menu_selected_index == 1: webbrowser.open(f"https://www.reddit.com{self.action_menu_article['permalink']}")
-            elif self.action_menu_selected_index == 2:
+            idx = self.action_menu_selected_index
+            if idx == 0:
+                url = self.action_menu_article['url']
+                threading.Thread(target=webbrowser.open, args=(url,)).start()
+            elif idx == 1:
+                url = f"https://www.reddit.com{self.action_menu_article['permalink']}"
+                threading.Thread(target=webbrowser.open, args=(url,)).start()
+            elif idx == 2:
                 query = f"summarize {self.action_menu_article['url']}"
-                webbrowser.open(f"https://www.perplexity.ai/?s=o&q={quote(query)}")
+                url = f"https://www.perplexity.ai/?s=o&q={quote(query)}"
+                threading.Thread(target=webbrowser.open, args=(url,)).start()
+            elif idx == 3:
+                self._copy_to_clipboard(self.action_menu_article['url'])
+            elif idx == 4:
+                url = f"https://archive.is/{quote(self.action_menu_article['url'])}"
+                threading.Thread(target=webbrowser.open, args=(url,)).start()
+            elif idx == 5:
+                domain_to_block = get_domain_from_url(self.action_menu_article['url'])
+                if domain_to_block and domain_to_block not in BLOCKED_DOMAINS:
+                    BLOCKED_DOMAINS.add(domain_to_block)
+                    save_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting,
+                                  self.subreddits_setting, self.show_clock_setting, BLOCKED_DOMAINS)
+                    self.all_articles = [a for a in self.all_articles if get_domain_from_url(a.get('url')) != domain_to_block]
+                    self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
+
             self.is_action_menu_view = False
         self.needs_redraw = True
 
     def handle_settings_input(self, key):
+        global BLOCKED_DOMAINS
         if key == "ESC":
-            save_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.subreddits_setting, self.show_clock_setting)
+            self.blocked_domains_setting = self.blocked_domains_setting.strip(',')
+            BLOCKED_DOMAINS = {d.strip() for d in self.blocked_domains_setting.split(',') if d.strip()}
+            save_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.subreddits_setting, self.show_clock_setting, BLOCKED_DOMAINS)
             self.is_settings_view = False
         elif key == "UP": self.settings_selected_index = max(0, self.settings_selected_index - 1)
-        elif key == "DOWN": self.settings_selected_index = min(5, self.settings_selected_index + 1)
-        elif self.settings_selected_index == 0:
+        elif key == "DOWN": self.settings_selected_index = min(7, self.settings_selected_index + 1)
+        elif key == "ENTER":
+            idx = self.settings_selected_index
+            if idx == 5: # Export Bookmarks
+                path = export_bookmarks_to_html()
+                self.status_message = f"Bookmarks exported to backups folder!"
+                self.status_message_timer = 50
+                self.is_settings_view = False
+            elif idx == 6: # Export Full Backup
+                backups_dir = CONFIG_DIR / "backups"
+                backups_dir.mkdir(exist_ok=True)
+                backup_filename = f"backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
+                dest_path = backups_dir / backup_filename
+                shutil.copy(DB_FILE, dest_path)
+                self.status_message = f"Backup saved to backups folder!"
+                self.status_message_timer = 50
+                self.is_settings_view = False
+            elif idx == 7: # Import from Backup
+                webbrowser.open(CONFIG_DIR.resolve().as_uri())
+                self.is_settings_view = False
+                self.is_import_view = True
+        elif self.settings_selected_index == 0: # Refresh Time
             if key == "LEFT": self.fetch_interval_setting = max(15, self.fetch_interval_setting - 15)
             elif key == "RIGHT": self.fetch_interval_setting += 15
-        elif self.settings_selected_index == 1:
+        elif self.settings_selected_index == 1: # Theme
             if key == "LEFT" or key == "RIGHT":
                 self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_names)
                 self.theme = THEMES[self.theme_names[self.current_theme_index]]
-        elif self.settings_selected_index == 2:
+        elif self.settings_selected_index == 2: # Show Clock
             if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
-        elif self.settings_selected_index == 3:
+        elif self.settings_selected_index == 3: # Subreddits
             if key == "BACKSPACE": self.subreddits_setting = self.subreddits_setting[:-1]
             elif len(key) == 1 and key.isprintable(): self.subreddits_setting += key
+        elif self.settings_selected_index == 4: # Blocked Domains
+            if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
+            elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
+
         self.needs_redraw = True
 
     def handle_comment_view_input(self, key):
@@ -515,20 +732,29 @@ class NewsFeedMenu:
             self.is_comment_view, self.comment_tree = False, []
             self.needs_redraw = True
 
-    def handle_search_input(self, key, items_data):
-        if key == "ESC":
-            self.is_search_view, self.search_query = False, ""
-        elif key == "BACKSPACE":
-            self.search_query = self.search_query[:-1]
-        elif len(key) == 1 and key.isprintable():
-            self.search_query += key
+    def handle_search_view_input(self, key, items_data):
+        if self.search_input_active:
+            if key == "ENTER":
+                self.search_input_active = False
+            elif key == "ESC":
+                self.is_search_view, self.search_query = False, ""
+                self.search_input_active = False
+            elif key == "BACKSPACE":
+                self.search_query = self.search_query[:-1]
+            elif len(key) == 1 and key.isprintable():
+                self.search_query += key
         else:
-            self.handle_main_view_input(key, items_data)
+            if key == '/':
+                self.search_input_active = True
+            elif key == "ESC":
+                self.is_search_view, self.search_query = False, ""
+            else:
+                self.handle_main_view_input(key, items_data)
         self.needs_redraw = True
 
     def handle_main_view_input(self, key, items_data):
         """Handles all key presses for the main article list view."""
-        if not items_data and key not in ["ESC", "s", "v", "/"]: return
+        if not items_data and key not in ["ESC", "s", "v", "/", "h"]: return
 
         original_index = self.selected_index
         if key == "UP": self.selected_index = max(0, self.selected_index - 1)
@@ -547,11 +773,12 @@ class NewsFeedMenu:
                 permalink = items_data[self.selected_index].get('permalink')
                 threading.Thread(target=self._fetch_comments_threaded, args=(permalink,)).start()
         elif key == "s": self.is_settings_view = True
+        elif key == "h": self.is_help_view = True
         elif key == 'v':
             self.is_bookmarks_view = not self.is_bookmarks_view
             self.selected_index, self.scroll_top = 0,0
         elif key == '/':
-            self.is_search_view, self.search_query = True, ""
+            self.is_search_view, self.search_query, self.search_input_active = True, "", True
         elif key == "ENTER":
             if items_data:
                 self.is_action_menu_view = True
@@ -569,14 +796,117 @@ class NewsFeedMenu:
                     update_article_status(url=newly_selected['url'], is_new=False)
         self.needs_redraw = True
 
+# --- Command-line and Utility Functions ---
+def export_bookmarks_to_html():
+    """Queries the DB for bookmarks and exports them to a styled HTML file."""
+    backups_dir = CONFIG_DIR / "backups"
+    backups_dir.mkdir(exist_ok=True)
+    html_filename = f"bookmarks-{time.strftime('%Y%m%d')}.html"
+    dest_path = backups_dir / html_filename
+
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM articles WHERE is_bookmarked = 1 ORDER BY created_utc DESC")
+        bookmarks = [dict(row) for row in cursor.fetchall()]
+
+    if not bookmarks:
+        li_items = "<li>No bookmarks found.</li>"
+    else:
+        li_items_list = []
+        for b in bookmarks:
+            domain = b.get('source_domain', 'N/A')
+            li_items_list.append(f'<li><a href="{b["url"]}">{b["title"]}</a> <span class="meta">({domain})</span></li>')
+        li_items = "\n".join(li_items_list)
+
+    html_template = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><title>Alien News Feed Bookmarks</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+               background-color: #1e1e1e; color: #d4d4d4; line-height: 1.6; margin: 0; padding: 2em; }}
+        .container {{ max-width: 800px; margin: 0 auto; }}
+        h1 {{ color: #569cd6; border-bottom: 1px solid #444; padding-bottom: 0.5em; }}
+        p {{ color: #999; }}
+        ul {{ list-style-type: none; padding: 0; }}
+        li {{ margin-bottom: 1em; padding: 1em; background-color: #252526; border-left: 3px solid #569cd6; }}
+        a {{ color: #9cdcfe; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        .meta {{ font-size: 0.8em; color: #888; margin-left: 0.5em; }}
+    </style>
+</head>
+<body><div class="container">
+    <h1>👽 Alien News Feed Bookmarks</h1>
+    <p>Exported on: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <ul>{li_items}</ul>
+</div></body></html>"""
+
+    with open(dest_path, 'w', encoding='utf-8') as f:
+        f.write(html_template)
+    return dest_path
+
+def export_database():
+    """Headless export of the database."""
+    backups_dir = CONFIG_DIR / "backups"
+    backups_dir.mkdir(exist_ok=True)
+    backup_filename = f"backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    dest_path = backups_dir / backup_filename
+    try:
+        shutil.copy(DB_FILE, dest_path)
+        print(f"Success! Backup saved to:\n{dest_path}")
+    except FileNotFoundError:
+        print(f"Error: Database file not found at {DB_FILE}")
+        sys.exit(1)
+
+def import_database(path_str):
+    """Headless import of a database file with confirmation."""
+    backup_path = Path(path_str)
+    if not backup_path.is_file():
+        print(f"Error: Backup file not found at '{backup_path}'")
+        sys.exit(1)
+
+    print("--- WARNING ---")
+    print("This will permanently overwrite your current database.")
+    print(f"Current DB: {DB_FILE}")
+    print(f"Importing from: {backup_path}")
+
+    confirm = input("Are you sure you want to continue? (y/n): ").lower().strip()
+
+    if confirm in ['y', 'yes']:
+        shutil.copy(backup_path, DB_FILE)
+        print("Import successful. Starting application...")
+    else:
+        print("Import cancelled.")
+        sys.exit(0)
+
 # --- Main Execution ---
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="A terminal-based news feed reader.")
+    parser.add_argument('--export', action='store_true', help="Export a full backup of the database and exit.")
+    parser.add_argument('--import', dest='import_path', metavar='PATH', help="Import a database from the specified path and start the app.")
+    args = parser.parse_args()
+
+    init_db()
+
+    if args.export:
+        export_database()
+        sys.exit(0)
+
+    if args.import_path:
+        import_database(args.import_path)
+
     print(f"Initializing AlienNewsFeed...")
     print(f"Config and database stored in: {CONFIG_DIR}")
-    init_db()
-    threading.Thread(target=fetch_articles_threaded, daemon=True).start()
-    menu = NewsFeedMenu()
-    menu.show()
-    os.system('cls' if os.name == 'nt' else 'clear')
-    print("Exiting.")
 
+    # Start the background thread for fetching articles
+    threading.Thread(target=fetch_articles_threaded, daemon=True).start()
+
+    time.sleep(1)
+
+    menu = NewsFeedMenu()
+    try:
+        menu.show()
+    finally:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print("Exiting.")
