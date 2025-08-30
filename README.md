@@ -46,6 +46,7 @@ You need Python 3.6+ to run this script.
 2. **Install the required dependency:** The script requires the `requests` library to fetch data from Reddit's API.
    ```
    pip install requests
+   pip install pid
 
 
    ```
