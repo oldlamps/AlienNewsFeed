@@ -1,6 +1,6 @@
 # 👽 Alien News Feed
 
-A customizable, terminal-based news reader that aggregates articles from your favorite subreddodes. Stay up-to-date with the latest news, tech, and politics without ever leaving your command line.
+A customizable, terminal-based news reader that aggregates articles from your favorite subreddits. Stay up-to-date with the latest news, tech, and politics without ever leaving your command line.
 
 ---
 
