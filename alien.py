@@ -13,8 +13,11 @@ import configparser
 import webbrowser
 import shutil
 import argparse
+import re
+import html
 from pathlib import Path
 from urllib.parse import urlparse, quote
+import pid # Added for single-instance locking
 
 # --- Platform-specific imports for direct keyboard input ---
 try:
@@ -85,27 +88,44 @@ THEMES = {
     "Default": {
         "highlight_bg": '\x1b[47m', "highlight_fg": '\x1b[30m',
         "bar_bg": '\x1b[48;5;235m', "bar_fg": '\x1b[97m',
-        "popup_bg": '\x1b[48;5;236m', "popup_fg": '\x1b[97m'
-    },
-    "Light": {
-        "highlight_bg": '\x1b[48;5;235m', "highlight_fg": '\x1b[97m',
-        "bar_bg": '\x1b[47m', "bar_fg": '\x1b[30m',
-        "popup_bg": '\x1b[47m', "popup_fg": '\x1b[30m'
+        "popup_bg": '\x1b[48;5;236m', "popup_fg": '\x1b[97m',
+        "new_fg": Colors.YELLOW
     },
     "Solarized Dark": {
-        "highlight_bg": '\x1b[48;5;22m', "highlight_fg": '\x1b[38;5;228m', # Dark Green BG, Light Yellow FG
-        "bar_bg": '\x1b[48;5;234m', "bar_fg": '\x1b[38;5;248m',       # Darker Grey BG, Light Grey FG
-        "popup_bg": '\x1b[48;5;235m', "popup_fg": '\x1b[38;5;250m'    # Dark Grey BG, Lighter Grey FG
+        "highlight_bg": '\x1b[48;5;22m', "highlight_fg": '\x1b[38;5;228m',
+        "bar_bg": '\x1b[48;5;234m', "bar_fg": '\x1b[38;5;248m',
+        "popup_bg": '\x1b[48;5;235m', "popup_fg": '\x1b[38;5;250m',
+        "new_fg": '\x1b[38;5;136m' # A muted yellow/gold
     },
-    "Dracula": {
-        "highlight_bg": '\x1b[48;5;55m', "highlight_fg": '\x1b[38;5;199m', # Purple BG, Pink FG
-        "bar_bg": '\x1b[48;5;234m', "bar_fg": '\x1b[38;5;177m',      # Dark Grey BG, Light Purple FG
-        "popup_bg": '\x1b[48;5;235m', "popup_fg": '\x1b[97m'         # Dark Grey BG, White FG
+    "Nord": {
+        "highlight_bg": '\x1b[48;5;24m', "highlight_fg": '\x1b[38;5;229m', # Dark blue bg, light cream fg
+        "bar_bg": '\x1b[48;5;236m', "bar_fg": '\x1b[38;5;111m',      # Darker grey bg, muted blue fg
+        "popup_bg": '\x1b[48;5;237m', "popup_fg": '\x1b[38;5;252m',
+        "new_fg": '\x1b[38;5;215m' # Muted orange
     },
-    "Paper": {
-        "highlight_bg": '\x1b[48;5;94m', "highlight_fg": '\x1b[97m',       # Brown BG, White FG
-        "bar_bg": '\x1b[48;5;239m', "bar_fg": '\x1b[97m',       # Dark Grey BG, White FG
-        "popup_bg": '\x1b[48;5;252m', "popup_fg": '\x1b[30m'        # Light Grey BG, Black FG
+    "Gruvbox Dark": {
+        "highlight_bg": '\x1b[48;5;131m', "highlight_fg": '\x1b[38;5;229m', # Muted red bg, light cream fg
+        "bar_bg": '\x1b[48;5;235m', "bar_fg": '\x1b[38;5;248m',
+        "popup_bg": '\x1b[48;5;236m', "popup_fg": '\x1b[38;5;250m',
+        "new_fg": '\x1b[38;5;214m' # Gold
+    },
+    "Monokai": {
+        "highlight_bg": '\x1b[48;5;197m', "highlight_fg": '\x1b[38;5;233m', # Bright pink bg, dark grey fg
+        "bar_bg": '\x1b[48;5;234m', "bar_fg": '\x1b[38;5;148m',      # Dark grey bg, yellow fg
+        "popup_bg": '\x1b[48;5;235m', "popup_fg": '\x1b[38;5;252m',
+        "new_fg": '\x1b[38;5;118m' # Bright green
+    },
+    "Dracula+": {
+        "highlight_bg": '\x1b[48;5;98m', "highlight_fg": '\x1b[38;5;231m', # Purple bg, bright white fg
+        "bar_bg": '\x1b[48;5;235m', "bar_fg": '\x1b[38;5;117m',      # Dark grey bg, cyan fg
+        "popup_bg": '\x1b[48;5;236m', "popup_fg": '\x1b[38;5;252m',
+        "new_fg": '\x1b[38;5;208m' # Orange
+    },
+     "Cyberpunk": {
+        "highlight_bg": '\x1b[48;5;208m', "highlight_fg": '\x1b[38;5;16m', # Bright yellow/orange bg, black fg
+        "bar_bg": '\x1b[48;5;17m', "bar_fg": '\x1b[38;5;228m',       # Dark blue bg, bright yellow fg
+        "popup_bg": '\x1b[48;5;18m', "popup_fg": '\x1b[38;5;252m',
+        "new_fg": '\x1b[38;5;198m' # Hot pink
     }
 }
 
@@ -170,27 +190,28 @@ def save_settings(theme_name, fetch_interval, subreddits, show_clock, blocked_do
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;") # Enable Write-Ahead Logging
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS articles (
                 url TEXT PRIMARY KEY, title TEXT NOT NULL, subreddit TEXT NOT NULL,
                 source_domain TEXT, permalink TEXT, created_utc REAL NOT NULL,
                 is_read INTEGER DEFAULT 0, is_bookmarked INTEGER DEFAULT 0,
-                is_new INTEGER DEFAULT 0 ) ''')
+                is_new INTEGER DEFAULT 0, score INTEGER DEFAULT 0, num_comments INTEGER DEFAULT 0 ) ''')
         cursor.execute("PRAGMA table_info(articles)")
         columns = [c[1] for c in cursor.fetchall()]
-        if 'source_domain' not in columns: cursor.execute("ALTER TABLE articles ADD COLUMN source_domain TEXT")
-        if 'permalink' not in columns: cursor.execute("ALTER TABLE articles ADD COLUMN permalink TEXT")
-        if 'is_new' not in columns: cursor.execute("ALTER TABLE articles ADD COLUMN is_new INTEGER DEFAULT 0")
+        if 'score' not in columns: cursor.execute("ALTER TABLE articles ADD COLUMN score INTEGER DEFAULT 0")
+        if 'num_comments' not in columns: cursor.execute("ALTER TABLE articles ADD COLUMN num_comments INTEGER DEFAULT 0")
         conn.commit()
 
 def add_article_to_db(article):
     global HAS_NEW_ARTICLES
-    domain = get_domain_from_url(article['url'])
+    domain = get_domain_from_url(article.get('url'))
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute('INSERT OR IGNORE INTO articles VALUES (?,?,?,?,?,?,?,?,?)', (
-            article['url'], article['title'], article['subreddit'], domain,
-            article['permalink'], article['created_utc'], 0, 0, 1))
+        cursor.execute('INSERT OR IGNORE INTO articles (url, title, subreddit, source_domain, permalink, created_utc, score, num_comments, is_new) VALUES (?,?,?,?,?,?,?,?,?)', (
+            article.get('url'), article.get('title'), article.get('subreddit'), domain,
+            article.get('permalink'), article.get('created_utc'), article.get('score', 0),
+            article.get('num_comments', 0), 1))
         if cursor.rowcount > 0:
             with data_lock: HAS_NEW_ARTICLES = True
         conn.commit()
@@ -253,7 +274,10 @@ def fetch_articles_threaded():
                 domain = get_domain_from_url(post_data.get("url"))
 
                 if not post_data.get("is_self") and post_data.get("url") and domain not in BLOCKED_DOMAINS:
-                    add_article_to_db({k: post_data.get(k) for k in ["title", "url", "subreddit", "created_utc", "permalink"]})
+                    add_article_to_db({
+                        k: post_data.get(k) for k in
+                        ["title", "url", "subreddit", "created_utc", "permalink", "score", "num_comments"]
+                    })
 
             last_checked_time = time.strftime("%H:%M:%S")
             ARTICLES_UPDATED.set()
@@ -330,19 +354,58 @@ class NewsFeedMenu:
         except (requests.exceptions.RequestException, IndexError, KeyError) as e: self.comment_view_status = f"Error: {e}"
         self.needs_redraw = True
 
+    def _format_comment_body(self, text):
+        text = html.unescape(text)
+
+        # Hyperlinks: [text](url) -> text [domain]
+        def replace_link(match):
+            text, url = match.group(1), match.group(2)
+            domain = get_domain_from_url(url)
+            return f'{text} {Colors.BLUE}[{domain}]{self.theme["popup_fg"]}'
+        text = re.sub(r'\[(.*?)\]\((.*?)\)', replace_link, text)
+
+        # Bold and italics
+        text = re.sub(r'\*\*(.*?)\*\*', f'{Colors.BOLD}\\1{Colors.RESET}{self.theme["popup_fg"]}', text)
+        text = re.sub(r'\*(.*?)\*', f'{Colors.BOLD}\\1{Colors.RESET}{self.theme["popup_fg"]}', text)
+
+        return text
+
+    def _draw_popup_border(self, start_x, start_y, pop_w, pop_h, title=""):
+        """Helper function to draw a titled border for a popup."""
+        pop_bg = self.theme['popup_bg']
+        border_color = self.theme['highlight_bg']
+        sys.stdout.write(border_color)
+
+        if title:
+            title_text = f" {title} "
+            content_width = pop_w - 2
+            remaining_width = content_width - len(title_text)
+            left_dashes = remaining_width // 2
+            right_dashes = remaining_width - left_dashes
+            top_border = f"┌{'─' * left_dashes}{title_text}{'─' * right_dashes}┐"
+        else:
+            top_border = f"┌{'─' * (pop_w - 2)}┐"
+        sys.stdout.write(f'\x1b[{start_y};{start_x}H{top_border}')
+
+        for i in range(pop_h - 2):
+            sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x}H│')
+            sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x + pop_w - 1}H│')
+
+        sys.stdout.write(f'\x1b[{start_y + pop_h - 1};{start_x}H└' + '─' * (pop_w - 2) + '┘')
+
+        sys.stdout.write(pop_bg)
+        for i in range(pop_h - 2):
+            sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x + 1}H{" " * (pop_w - 2)}')
+
     def _draw_import_instructions(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
         pop_w, pop_h = 74, 11
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
-        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
-        sys.stdout.write(f'{pop_bg}')
-        sys.stdout.write(f'\x1b[{start_y};{start_x}H┌' + '─'*(pop_w-2) + '┐')
-        for i in range(pop_h - 2):
-            sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x}H│{" " * (pop_w - 2)}│')
-        sys.stdout.write(f'\x1b[{start_y + pop_h - 1};{start_x}H└' + '─'*(pop_w-2) + '┘')
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Import Instructions")
 
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
         content = [
             f"{Colors.YELLOW}Your config folder has been opened.",
             f"{pop_fg}To restore a backup, you can either:",
@@ -364,13 +427,9 @@ class NewsFeedMenu:
         pop_w, pop_h = 70, 16
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
-        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
-        sys.stdout.write(f'{pop_bg}')
-        sys.stdout.write(f'\x1b[{start_y};{start_x}H┌' + '─'*(pop_w-2) + '┐')
-        for i in range(pop_h - 2):
-            sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x}H│{" " * (pop_w - 2)}│')
-        sys.stdout.write(f'\x1b[{start_y + pop_h - 1};{start_x}H└' + '─'*(pop_w-2) + '┘')
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Help / About")
 
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
         key_color, desc_color, header_color = Colors.YELLOW, pop_fg, Colors.CYAN
 
         content = [
@@ -388,7 +447,7 @@ class NewsFeedMenu:
             f"  {key_color}[h]{desc_color}       - Show this help screen",
             f"  {key_color}[ESC]{desc_color}     - Go back, clear search, or quit",
             f"",
-            f"{Colors.LIGHT_GREY}      Alien News Feed v2.8 - Created by You!"
+            f"{Colors.LIGHT_GREY}      Alien News Feed v3.0 - Created by You!"
         ]
 
         for i, line in enumerate(content):
@@ -401,10 +460,8 @@ class NewsFeedMenu:
         pop_w, pop_h = 50, 11
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Actions")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
-        sys.stdout.write(f'{pop_bg}'); sys.stdout.write(f'\x1b[{start_y};{start_x}H┌' + '─'*(pop_w-2) + '┐')
-        for i in range(pop_h-2): sys.stdout.write(f'\x1b[{start_y+1+i};{start_x}H│{" "*(pop_w-2)}│')
-        sys.stdout.write(f'\x1b[{start_y+pop_h-1};{start_x}H└' + '─'*(pop_w-2) + '┘')
 
         options = [
             "Open Article in Browser", "Open Comments in Browser", "Summarize with Perplexity",
@@ -437,10 +494,8 @@ class NewsFeedMenu:
         pop_w, pop_h = 70, 13
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Settings")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
-        sys.stdout.write(f'{pop_bg}'); sys.stdout.write(f'\x1b[{start_y};{start_x}H┌' + '─'*(pop_w-2) + '┐')
-        for i in range(pop_h - 2): sys.stdout.write(f'\x1b[{start_y+1+i};{start_x}H│{" "*(pop_w-2)}│')
-        sys.stdout.write(f'\x1b[{start_y+pop_h-1};{start_x}H└' + '─'*(pop_w-2) + '┘')
 
         sub_text = self.subreddits_setting
         if self.settings_selected_index == 3: sub_text += "_"
@@ -463,11 +518,13 @@ class NewsFeedMenu:
         divider_pos = 5
 
         for i, option in enumerate(options):
+            row = start_y + 2 + i
+            if i > divider_pos: row += 1
+
             if i == divider_pos:
-                sys.stdout.write(f"\x1b[{start_y+2+i};{start_x+2}H{pop_bg}{pop_fg}{'─'*(pop_w-4)}{Colors.RESET}")
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{'─'*(pop_w-4)}{Colors.RESET}")
                 continue
 
-            row = start_y + 2 + i
             text = option.ljust(pop_w - 4)
 
             logical_index = i
@@ -485,25 +542,35 @@ class NewsFeedMenu:
         pop_w, pop_h = int(term_w * 0.9), int(term_h * 0.9)
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Comments")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
-        sys.stdout.write(f'{pop_bg}'); sys.stdout.write(f'\x1b[{start_y};{start_x}H┌' + '─'*(pop_w-2) + '┐')
-        for i in range(pop_h - 3): sys.stdout.write(f'\x1b[{start_y+1+i};{start_x}H│{" "*(pop_w-2)}│')
+
         sys.stdout.write(f'\x1b[{start_y+pop_h-2};{start_x}H├' + '─'*(pop_w-2) + '┤')
-        sys.stdout.write(f'\x1b[{start_y+pop_h-1};{start_x}H└' + '─'*(pop_w-2) + '┘')
 
         if self.comment_view_status:
             sys.stdout.write(f'\x1b[{start_y+2};{start_x+2}H{pop_bg}{pop_fg}{self.comment_view_status.ljust(pop_w-4)}{Colors.RESET}')
         elif self.comment_tree:
             self.visible_comments = []; self._flatten_comment_tree(self.comment_tree, self.visible_comments)
-            cont_w, cont_h = pop_w - 4, pop_h - 3
+            cont_w, cont_h = pop_w - 4, pop_h - 4
             lines, sel_line = [], -1
             for i, c in enumerate(self.visible_comments):
                 if i == self.comment_selected_index: sel_line = len(lines)
                 indicator = "[+] " if c.children and c.is_collapsed else "[-] " if c.children else ""
                 header = f"{indicator}{Colors.YELLOW}{c.author}{pop_fg} ({c.score}):"
-                body = textwrap.wrap(c.body, width=cont_w - len("  "*c.depth))
                 lines.append({'text': f"{'  '*c.depth}{header}", 'idx': i})
-                for l in body: lines.append({'text': f"{'  '*c.depth}{l}", 'idx': i})
+
+                formatted_body = self._format_comment_body(c.body)
+                for line in formatted_body.split('\n'):
+                    prefix, quote_offset = "", 0
+                    if line.startswith('>'):
+                        line = line[1:].lstrip()
+                        prefix = f"{Colors.GREEN}┃ {Colors.RESET}{pop_fg}"
+                        quote_offset = 2
+
+                    wrapped_lines = textwrap.wrap(line, width=cont_w - len("  "*c.depth) - quote_offset)
+                    for wrapped_line in wrapped_lines:
+                        lines.append({'text': f"{'  '*c.depth}{prefix}{wrapped_line}", 'idx': i})
+
             if sel_line != -1:
                 if sel_line < self.comment_scroll_top: self.comment_scroll_top = sel_line
                 if sel_line >= self.comment_scroll_top+cont_h: self.comment_scroll_top = sel_line-cont_h+1
@@ -515,7 +582,7 @@ class NewsFeedMenu:
                 output = line['text'].ljust(cont_w)
                 if is_sel: sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{output}{Colors.RESET}")
                 else: sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{output}{Colors.RESET}")
-        help_text = "[↑/↓] Scroll | [k/j] Top-Level | [↵]Collapse | [ESC]Back".center(pop_w - 2)
+        help_text = "[↑/↓] Scroll | [←/→] Top-Level | [↵]Collapse | [ESC]Back".center(pop_w - 2)
         sys.stdout.write(f"\x1b[{start_y+pop_h-2};{start_x+1}H{pop_bg}{pop_fg}{help_text}{Colors.RESET}")
         sys.stdout.flush()
 
@@ -528,15 +595,17 @@ class NewsFeedMenu:
         if self.is_bookmarks_view: title += " [Bookmarks]"
         if self.is_search_view: title += f" [Search: {self.search_query}]"
 
+        BG_BAR, FG_BAR = self.theme['bar_bg'], self.theme['bar_fg']
+
         if self.show_clock_setting:
             current_time = time.strftime("%A, %B %d, %Y %I:%M %p")
             padding = ' ' * max(0, term_w - (len(title) + 1) - len(current_time))
             full_title_bar = f"{title}{padding}{current_time}"
         else:
             full_title_bar = title
-        sys.stdout.write(f'\x1b[1;1H{full_title_bar}')
+        sys.stdout.write(f'\x1b[1;1H{BG_BAR}{FG_BAR}{full_title_bar.ljust(term_w)}{Colors.RESET}')
 
-        HL_BG, FG_HL, BG_BAR, FG_BAR = self.theme['highlight_bg'], self.theme['highlight_fg'], self.theme['bar_bg'], self.theme['bar_fg']
+        HL_BG, FG_HL = self.theme['highlight_bg'], self.theme['highlight_fg']
 
         if not items_data: sys.stdout.write(f'\x1b[3;1HNo articles found...{Colors.RESET}')
         else:
@@ -548,7 +617,7 @@ class NewsFeedMenu:
                 item, row = items_data[i], i-self.scroll_top+3
                 sub, src = f"{Colors.GREEN}[{item.get('subreddit')}]", f"{Colors.CYAN}[{item.get('source_domain','')}]"
                 bookmark, title_color = ("🔖 " if item.get('is_bookmarked') else ""), ""
-                if item.get('is_new'): title_color = Colors.YELLOW
+                if item.get('is_new'): title_color = self.theme['new_fg']
                 elif item.get('is_read'): title_color = Colors.LIGHT_GREY
                 display = f"{title_color}{format_time_ago(item.get('created_utc')):<8} {sub} {src}{Colors.RESET} {bookmark}{item.get('title')}{Colors.RESET}"
                 line = f"> {display}" if i == self.selected_index else f"  {display}"
@@ -697,9 +766,11 @@ class NewsFeedMenu:
             if key == "LEFT": self.fetch_interval_setting = max(15, self.fetch_interval_setting - 15)
             elif key == "RIGHT": self.fetch_interval_setting += 15
         elif self.settings_selected_index == 1: # Theme
-            if key == "LEFT" or key == "RIGHT":
+            if key == "RIGHT":
                 self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_names)
-                self.theme = THEMES[self.theme_names[self.current_theme_index]]
+            elif key == "LEFT":
+                self.current_theme_index = (self.current_theme_index - 1 + len(self.theme_names)) % len(self.theme_names)
+            self.theme = THEMES[self.theme_names[self.current_theme_index]]
         elif self.settings_selected_index == 2: # Show Clock
             if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
         elif self.settings_selected_index == 3: # Subreddits
@@ -716,10 +787,10 @@ class NewsFeedMenu:
             original_index = self.comment_selected_index
             if key == "UP": self.comment_selected_index = max(0, self.comment_selected_index - 1)
             elif key == "DOWN": self.comment_selected_index = min(len(self.visible_comments) - 1, self.comment_selected_index + 1)
-            elif key == 'j':
+            elif key == 'LEFT':
                 for i in range(self.comment_selected_index - 1, -1, -1):
                     if self.visible_comments[i].depth == 0: self.comment_selected_index = i; break
-            elif key == 'k':
+            elif key == 'RIGHT':
                 for i in range(self.comment_selected_index + 1, len(self.visible_comments)):
                     if self.visible_comments[i].depth == 0: self.comment_selected_index = i; break
             elif key == "ENTER":
@@ -887,26 +958,34 @@ if __name__ == '__main__':
     parser.add_argument('--import', dest='import_path', metavar='PATH', help="Import a database from the specified path and start the app.")
     args = parser.parse_args()
 
-    init_db()
+    pid_file = pid.PidFile(pidname='aliennewsfeed', piddir=CONFIG_DIR)
 
-    if args.export:
-        export_database()
-        sys.exit(0)
-
-    if args.import_path:
-        import_database(args.import_path)
-
-    print(f"Initializing AlienNewsFeed...")
-    print(f"Config and database stored in: {CONFIG_DIR}")
-
-    # Start the background thread for fetching articles
-    threading.Thread(target=fetch_articles_threaded, daemon=True).start()
-
-    time.sleep(1)
-
-    menu = NewsFeedMenu()
     try:
-        menu.show()
-    finally:
-        os.system('cls' if os.name == 'nt' else 'clear')
-        print("Exiting.")
+        with pid_file: # Enforces single instance
+            init_db()
+
+            if args.export:
+                export_database()
+                sys.exit(0)
+
+            if args.import_path:
+                import_database(args.import_path)
+
+            print(f"Initializing AlienNewsFeed...")
+            print(f"Config and database stored in: {CONFIG_DIR}")
+
+            # Start the background thread for fetching articles
+            threading.Thread(target=fetch_articles_threaded, daemon=True).start()
+
+            time.sleep(1)
+
+            menu = NewsFeedMenu()
+            try:
+                menu.show()
+            finally:
+                os.system('cls' if os.name == 'nt' else 'clear')
+                print("Exiting.")
+    except pid.PidFileAlreadyLockedError:
+        print("Another instance of Alien News Feed is already running. Exiting.")
+        sys.exit(1)
+
