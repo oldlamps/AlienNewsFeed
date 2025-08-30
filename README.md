@@ -30,7 +30,7 @@ You need Python 3.6+ to run this script.
 
 1.  **Clone the repository (or download the script):**
     ```bash
-    git clone [https://github.com/oldlamps/AlienNewsFeed.git](https://github.com/oldlamps/AlienNewsFeed.git)
+    git clone https://github.com/oldlamps/AlienNewsFeed.git
     cd AlienNewsFeed
     ```
 
