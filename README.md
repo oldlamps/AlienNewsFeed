@@ -4,7 +4,7 @@ A customizable, terminal-based news reader that aggregates articles from your fa
 
 ---
 
-## ✨ Features
+## Features
 
 * **Live Reddit Feed**: Fetches the latest articles from any combination of subreddits (e.g., `news+worldnews+technology`).
 * **Clean Terminal UI**: A smooth, keyboard-driven interface for browsing articles.
@@ -26,7 +26,7 @@ A customizable, terminal-based news reader that aggregates articles from your fa
 
 ---
 
-## 🚀 Installation
+## Installation
 
 You need Python 3.6+ to run this script.
 
@@ -44,7 +44,7 @@ You need Python 3.6+ to run this script.
 
 ---
 
-##  käyttö (Usage)
+##  Usage
 
 1.  **Run the script:**
     Navigate to the project directory and run:
