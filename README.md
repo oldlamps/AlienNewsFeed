@@ -15,11 +15,9 @@ A customizable, terminal-based news reader that aggregates articles from your fa
     * Instantly summarize any article with with links to [Perplexity AI](https://www.perplexity.ai/).
 * **Customization & Settings**:
     * **Themes**: Choose from several built-in color schemes (Default, Light, Solarized Dark, Dracula, Paper).
-    * **Subreddits**: Easily change the list of subreddits to fetch news from.
-    * **Refresh Rate**: Control how often the feed checks for new articles.
-    * **Clock**: Toggle a live clock in the header.
+    * **Subreddits**: Easily change the list of subreddits to fetch news from. 
 * **Article Management**:
-    * Bookmark articles for later.
+    * Bookmark articles to read later.
     * Filter by bookmarked articles.
     * Live search to filter articles by title or domain.
 * **Cross-Platform**: Works on Windows, macOS, and Linux.
