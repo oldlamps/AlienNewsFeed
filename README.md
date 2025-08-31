@@ -10,13 +10,18 @@ I designed this project to fulfill a need that I couldn't get anywhere else in a
 
 ## Features
 
+* **Multi-Profile Management**: You can create, rename, delete, and switch between different user profiles. Each profile can have its own unique list of subreddits and a separate database, keeping your "Work" and "Hobby" news feeds completely separate.
 * **Live Reddit Feed**: Fetches the latest articles from any combination of subreddits (e.g., `news+worldnews+technology`).
 * **Clean Terminal UI**: A smooth, keyboard-driven interface for browsing articles with multiple themes.
+* **Customizable Theming**: The application supports multiple color schemes (like Solarized, Nord, Dracula+) to change the look and feel of the interface.
 * **Persistent Storage**: Uses an SQLite database to store articles, keeping track of read, new, and bookmarked items between sessions.
 * **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view.
 * **Content Curation**:
   * **Site Filtering**: Block unwanted sites on-the-fly from the action menu.
   * **Blocklist Management**: Manage a persistent list of excluded domains in the settings menu.
+* **Filtering and Searching**
+   * **Toggle a "bookmarks-only" view**
+   * **Search your entire article history for keywords.**
 * **Flexible Actions**:
   * Open articles or comment threads in your default web browser.
   * Instantly summarize any article with links to [Perplexity AI](https://www.perplexity.ai/ "null").
