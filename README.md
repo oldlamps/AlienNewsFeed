@@ -2,6 +2,9 @@
 
 A customizable, terminal-based news reader that aggregates articles from your favorite subreddits. Stay up-to-date with the latest news, tech, and politics without ever leaving your command line.
 
+<img width="90%" height="90%" alt="alien help" src="https://github.com/user-attachments/assets/b223e9d6-cc94-4b20-a71c-cbbb3e3296fc" />
+
+
 ## Philosophy & Motivation
 
 Greetings Earthlings. I've designed this project to fulfill a need that I couldn't get anywhere else in a way I needed to.
@@ -11,12 +14,13 @@ What's the point? Well one reason is I feel Reddit is uniquely curated in a way 
 
 ## Features
 
-* **Multi-Profile Management**: You can create, rename, delete, and switch between different user profiles. Each profile can have its own unique list of subreddits and a separate database, keeping your "Work" and "Hobby" news feeds completely separate.
+* **Multi-Profile Management**: You can create, rename, delete, and switch between different user profiles. Each profile can have its own unique list of subreddits and a separate database, keeping your "Work" and "Hobby" news feeds completely separate.<img width="90%" height="90%" alt="alien profile" src="https://github.com/user-attachments/assets/d8b302fd-f84e-45b9-874b-4af624ad6b3f" />
+
 * **Live Reddit Feed**: Fetches the latest articles from any combination of subreddits (e.g., `news+worldnews+technology`).
 * **Clean Terminal UI**: A smooth, keyboard-driven interface for browsing articles with multiple themes.
 * **Customizable Theming**: The application supports multiple color schemes (like Solarized, Nord, Dracula+) to change the look and feel of the interface.
 * **Persistent Storage**: Uses an SQLite database to store articles, keeping track of read, new, and bookmarked items between sessions.
-* **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view.
+* **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view.<img width="90%" height="90%" alt="alien comments" src="https://github.com/user-attachments/assets/2c5068e9-e563-4d79-a5dc-1725b91a8119" />
 * **Content Curation**:
   * **Site Filtering**: Block unwanted sites on-the-fly from the action menu.
   * **Blocklist Management**: Manage a persistent list of excluded domains in the settings menu.
