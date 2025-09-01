@@ -166,3 +166,24 @@ You can customize the application by editing the `config.ini` file located in th
 * `BlockedDomains`: A comma-separated list of domains to exclude from the feed (e.g., `badnews.com,another-site.net`).
 
 A restart is required for changes to `FetchInterval` and `Subreddits` to take effect.
+
+ ### Clipboard Support 📋
+
+ The "Copy URL to Clipboard" feature relies on external command-line utilities.
+
+   * **Windows** (`clip.exe`) and **macOS** (`pbcopy`): The necessary tools are included with the operating system by default.
+
+   * **Linux** (`xclip`): This tool is often **not** installed by default. If the copy feature isn't working, you'll need to install it using your distribution's package manager.
+
+       * **Debian / Ubuntu / Mint:**
+         ```bash
+         sudo apt-get install xclip
+         ```
+       * **Fedora / CentOS / RHEL:**
+         ```bash
+         sudo dnf install xclip
+         ```
+       * **Arch Linux:**
+         ```bash
+         sudo pacman -S xclip
+         ```
