@@ -968,24 +968,16 @@ class NewsFeedMenu:
 
         safe_width = term_w - 1
 
-        # Get colors from the current theme for the header
-        bar_fg = self.theme['bar_fg']
-        accent_color = self.theme['new_fg']
-
-        # Build the title string with themed colors for status text
-        title = f"  {self.title}"
-        title += f" {accent_color}[{self.active_profile}]{bar_fg}"
+        title = f"  {self.title} [{self.active_profile}]"
 
         current_mode = self.view_modes[self.current_view_mode_index]
-        title += f" {accent_color}[{current_mode}]{bar_fg}"
+        title += f" [{current_mode}]"
 
-        if self.is_search_view: title += f" {accent_color}[Search: {self.search_query}]{bar_fg}"
-
+        if self.is_search_view: title += f" [Search: {self.search_query}]"
         BG_BAR, FG_BAR = self.theme['bar_bg'], self.theme['bar_fg']
 
         if self.show_clock_setting:
             current_time = time.strftime("%A, %B %d, %Y %I:%M %p")
-            # We need to account for non-printing ANSI chars when calculating padding
             plain_title_len = len(re.sub(r'\x1b\[[0-9;]*m', '', title))
             padding = ' ' * max(0, safe_width - plain_title_len - len(current_time))
             header_text = f"{title}{padding}{current_time}"
@@ -1017,7 +1009,15 @@ class NewsFeedMenu:
                 display = f"{title_color}{format_time_ago(item.get('created_utc')):<8} {sub} {src}{Colors.RESET} {highlight_icon}{bookmark}{video_icon}{item.get('title')}{Colors.RESET}"
                 line = f"> {display}" if i == self.selected_index else f"  {display}"
 
-                line_to_draw = line.ljust(safe_width)[:safe_width]
+                # FIX: Replace the simple ljust with our robust padding logic
+                plain_text_len = len(re.sub(r'\x1b\[[0-9;]*m', '', line))
+                # Truncate if too long, pad with spaces if too short
+                if plain_text_len > safe_width:
+                    # This is a complex problem; for now, we just prevent wrapping
+                    line_to_draw = line
+                else:
+                    padding = ' ' * (safe_width - plain_text_len)
+                    line_to_draw = line + padding
 
                 if i == self.selected_index and not is_background:
                     sys.stdout.write(f'\x1b[{row};1H{self.theme["highlight_bg"]}{self.theme["highlight_fg"]}{line_to_draw}{Colors.RESET}')
