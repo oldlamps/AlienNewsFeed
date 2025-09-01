@@ -20,7 +20,7 @@ What's the point? Well one reason is I feel Reddit is uniquely curated in a way 
 * **Clean Terminal UI**: A smooth, keyboard-driven interface for browsing articles with multiple themes.
 * **Customizable Theming**: The application supports multiple color schemes (like Solarized, Nord, Dracula+) to change the look and feel of the interface.
 * **Persistent Storage**: Uses an SQLite database to store articles, keeping track of read, new, and bookmarked items between sessions.
-* **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view. <img width="90%" height="90%" alt="alien comments" src="https://github.com/user-attachments/assets/2c5068e9-e563-4d79-a5dc-1725b91a8119" />
+* **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view. 
 * **Content Curation**:
   * **Site Filtering**: Block unwanted sites on-the-fly from the action menu.
   * **Blocklist Management**: Manage a persistent list of excluded domains in the settings menu.
@@ -41,6 +41,8 @@ What's the point? Well one reason is I feel Reddit is uniquely curated in a way 
 * **User-Friendly**:
   * An in-app help screen provides a quick reference for all keybindings.
   * Cross-platform support for Windows, macOS, and Linux.
+
+<img width="90%" height="90%" alt="alien comments" src="https://github.com/user-attachments/assets/2c5068e9-e563-4d79-a5dc-1725b91a8119" />
 
 ## Installation
 
