@@ -41,19 +41,27 @@ try:
                 if ch == '\r': return "ENTER"
                 return ch
 
-            # Handle escape sequences for special keys
             new_settings = termios.tcgetattr(fd)
             new_settings[6][termios.VMIN], new_settings[6][termios.VTIME] = 0, 0
             termios.tcsetattr(fd, termios.TCSANOW, new_settings)
 
-            extra = sys.stdin.read(2)
-            if extra == '[A': return "UP"
-            if extra == '[B': return "DOWN"
-            if extra == '[C': return "RIGHT"
-            if extra == '[D': return "LEFT"
-            if extra == '[3':
-                if sys.stdin.read(1) == '~': return "DELETE"
-            return "ESC"
+            extra = sys.stdin.read(3)
+
+            if not extra:
+                return "ESC"
+
+            if extra.startswith('[A'): return "UP"
+            if extra.startswith('[B'): return "DOWN"
+            if extra.startswith('[C'): return "RIGHT"
+            if extra.startswith('[D'): return "LEFT"
+            if extra == '[3~': return "DELETE"
+            if extra == '[5~': return "PGUP"
+            if extra == '[6~': return "PGDOWN"
+            # ADD THESE FOUR LINES for different terminal emulators
+            if extra == '[H' or extra == '[1~': return "HOME"
+            if extra == '[F' or extra == '[4~': return "END"
+
+            return None
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -75,9 +83,11 @@ except ImportError:
                 if ch == b'\x08': return "BACKSPACE"
                 if ch == b'\xe0':
                     ch2 = msvcrt.getch()
+                    # ADD HOME and END to this dictionary
                     return {
                         b'H': "UP", b'P': "DOWN", b'K': "LEFT",
-                        b'M': "RIGHT", b'S': "DELETE"
+                        b'M': "RIGHT", b'S': "DELETE", b'I': "PGUP",
+                        b'Q': "PGDOWN", b'G': "HOME", b'O': "END"
                     }.get(ch2)
                 try: return ch.decode('utf-8')
                 except UnicodeDecodeError: return None
@@ -92,14 +102,42 @@ class Colors:
     ITALIC = '\x1b[3m'
     STRIKETHROUGH = '\x1b[9m'
     INLINE_CODE_BG = '\x1b[48;5;239m'
+    BOLD_OFF = '\x1b[22m'
+    ITALIC_OFF = '\x1b[23m'
+    STRIKETHROUGH_OFF = '\x1b[29m'
+    UNDERLINE = '\x1b[4m'
+    UNDERLINE_OFF = '\x1b[24m'
 
 THEMES = {
     "Default": {
-        "highlight_bg": '\x1b[47m', "highlight_fg": '\x1b[30m',
+        "highlight_bg": '\x1b[48;5;238m',
+        "highlight_fg": '\x1b[97m',
         "bar_bg": '\x1b[48;5;235m', "bar_fg": '\x1b[97m',
         "popup_bg": '\x1b[48;5;236m', "popup_fg": '\x1b[97m',
         "new_fg": Colors.YELLOW,
         "delete_fg": Colors.RED
+    },
+    # --- A classic, low-contrast light theme for readability ---
+    "Solarized Light": {
+        "highlight_bg": '\x1b[48;5;153m', # Light desaturated cyan
+        "highlight_fg": '\x1b[38;5;66m',  # Dark slate
+        "bar_bg": '\x1b[48;5;231m',       # Off-white (base3)
+        "bar_fg": '\x1b[38;5;241m',       # Dark grey (base00)
+        "popup_bg": '\x1b[48;5;254m',     # Lighter grey (base2)
+        "popup_fg": '\x1b[38;5;241m',     # Dark grey (base00)
+        "new_fg": '\x1b[38;5;136m',       # Solarized yellow
+        "delete_fg": '\x1b[38;5;160m'     # Solarized red
+    },
+    # --- A clean, minimalist, high-contrast light theme ---
+    "Paper White": {
+        "highlight_bg": '\x1b[48;5;235m', # Dark grey
+        "highlight_fg": '\x1b[38;5;15m',  # White
+        "bar_bg": '\x1b[48;5;15m',        # White
+        "bar_fg": '\x1b[38;5;232m',       # Black
+        "popup_bg": '\x1b[48;5;254m',     # Off-white
+        "popup_fg": '\x1b[38;5;232m',     # Black
+        "new_fg": '\x1b[38;5;172m',       # A deep orange for contrast
+        "delete_fg": '\x1b[38;5;196m'     # A strong red
     },
     "Solarized Dark": {
         "highlight_bg": '\x1b[48;5;22m', "highlight_fg": '\x1b[38;5;228m',
@@ -114,6 +152,17 @@ THEMES = {
         "popup_bg": '\x1b[48;5;237m', "popup_fg": '\x1b[38;5;252m',
         "new_fg": '\x1b[38;5;215m',
         "delete_fg": '\x1b[38;5;196m'
+    },
+    # --- A retro green-on-black terminal theme ---
+    "Matrix": {
+        "highlight_bg": '\x1b[48;5;118m', # Bright green
+        "highlight_fg": '\x1b[38;5;16m',  # Black
+        "bar_bg": '\x1b[48;5;16m',        # Black
+        "bar_fg": '\x1b[38;5;46m',        # Bright green
+        "popup_bg": '\x1b[48;5;233m',     # Dark grey
+        "popup_fg": '\x1b[38;5;40m',      # A more readable, dimmer green
+        "new_fg": '\x1b[38;5;178m',       # Contrasting amber/yellow
+        "delete_fg": '\x1b[38;5;196m'     # Red
     },
     "Gruvbox Dark": {
         "highlight_bg": '\x1b[48;5;131m', "highlight_fg": '\x1b[38;5;229m',
@@ -135,6 +184,17 @@ THEMES = {
         "popup_bg": '\x1b[48;5;236m', "popup_fg": '\x1b[38;5;252m',
         "new_fg": '\x1b[38;5;208m',
         "delete_fg": '\x1b[38;5;203m'
+    },
+    # --- A stylish synthwave/outrun theme with neon colors ---
+    "Retro Sunset": {
+        "highlight_bg": '\x1b[48;5;198m', # Hot pink
+        "highlight_fg": '\x1b[38;5;17m',  # Deep blue
+        "bar_bg": '\x1b[48;5;17m',        # Deep blue
+        "bar_fg": '\x1b[38;5;87m',        # Electric cyan
+        "popup_bg": '\x1b[48;5;18m',      # Darker blue
+        "popup_fg": '\x1b[38;5;254m',     # Creamy white
+        "new_fg": '\x1b[38;5;220m',       # Vibrant gold/yellow
+        "delete_fg": '\x1b[38;5;198m'     # Hot pink
     },
      "Cyberpunk": {
         "highlight_bg": '\x1b[48;5;208m', "highlight_fg": '\x1b[38;5;16m',
@@ -159,7 +219,7 @@ CONFIG_FILE = CONFIG_DIR / "config.ini"
 # --- Globals that will be set by profile loader ---
 DB_FILE = None
 SUBREDDITS_STRING = "news+worldnews+politics+technology"
-FETCH_INTERVAL_SECONDS = 60
+FETCH_INTERVAL_SECONDS = 300
 SHOW_CLOCK = True
 BLOCKED_DOMAINS = set()
 NEEDS_RESTART = False
@@ -175,8 +235,10 @@ stop_thread_event = threading.Event()
 
 # --- Settings Management ---
 def setup_config():
+    """Ensures config.ini exists and is in the new profile format."""
     config = configparser.ConfigParser()
     if not CONFIG_FILE.exists() or not CONFIG_FILE.read_text().strip():
+        # Create a brand new config
         config['Settings'] = {'ActiveProfile': 'Main'}
         config['Profile:Main'] = {
             'Subreddits': 'news+worldnews+politics+technology',
@@ -185,14 +247,19 @@ def setup_config():
             'MuteKeywords': ''
         }
         config['General'] = {
-            'Theme': 'Default', 'FetchInterval': '60',
-            'ShowClock': 'true', 'BlockedDomains': ''
+            'Theme': 'Default',
+            'FetchInterval': '300',  # CHANGED
+            'ShowClock': 'true',
+            'BlockedDomains': ''
         }
         with open(CONFIG_FILE, 'w') as f: config.write(f)
     elif "[Profile:Main]" not in CONFIG_FILE.read_text():
+        # Upgrade old config to new profile format
         config.read(CONFIG_FILE)
         old_settings = dict(config['Settings'])
-        config.clear()
+
+        config.clear() # Clear existing structure
+
         config['Settings'] = {'ActiveProfile': 'Main'}
         config['Profile:Main'] = {
             'Subreddits': old_settings.get('subreddits', 'news+worldnews+politics+technology'),
@@ -202,7 +269,7 @@ def setup_config():
         }
         config['General'] = {
             'Theme': old_settings.get('theme', 'Default'),
-            'FetchInterval': old_settings.get('fetchinterval', '60'),
+            'FetchInterval': old_settings.get('fetchinterval', '300'), # CHANGED
             'ShowClock': old_settings.get('showclock', 'true'),
             'BlockedDomains': old_settings.get('blockeddomains', '')
         }
@@ -431,7 +498,7 @@ def fetch_articles_threaded():
                     article_data = {k: post_data.get(k) for k in ["title", "url", "subreddit", "created_utc", "permalink", "score", "num_comments"]}
                     add_article_to_db(article_data, deleted_urls)
 
-            last_checked_time = time.strftime("%H:%M:%S")
+            last_checked_time = time.strftime("%I:%M:%S %p")
             ARTICLES_UPDATED.set()
         except requests.exceptions.RequestException:
             # If any network error occurs, set the status to False
@@ -491,6 +558,7 @@ class NewsFeedMenu:
         self.action_menu_article = None
         self.action_menu_selected_index = 0
         self.article_to_delete = None
+
     def _get_action_menu_options(self):
         options = {
             "Open Article in Browser": "open_article",
@@ -546,21 +614,36 @@ class NewsFeedMenu:
             if not raw_comments: self.comment_view_status = "No comments found."
             else: self.comment_tree, self.comment_view_status = self._parse_comments_to_tree(raw_comments), ""
             self.comment_selected_index, self.comment_scroll_top = 0, 0
+
+            # Prepare the lines for drawing once
+            self._prepare_comment_lines()
+
         except (requests.exceptions.RequestException, IndexError, KeyError) as e: self.comment_view_status = f"Error: {e}"
         self.needs_redraw = True
 
     def _format_comment_body(self, text):
         text = html.unescape(text)
+
         def replace_link(match):
-            text, url = match.group(1), match.group(2)
-            domain = get_domain_from_url(url)
-            return f'{text} {Colors.ITALIC}{Colors.BLUE}[{domain}]{Colors.RESET}{self.theme["popup_fg"]}'
-        text = re.sub(r'\[(.*?)\]\((.*?)\)', replace_link, text)
-        text = re.sub(r'\*\*(.*?)\*\*', f'{Colors.BOLD}\\1{Colors.RESET}{self.theme["popup_fg"]}', text)
-        text = re.sub(r'~~(.*?)~~', f'{Colors.STRIKETHROUGH}\\1{Colors.RESET}{self.theme["popup_fg"]}', text)
-        text = re.sub(r'\*(.*?)\*', f'{Colors.ITALIC}\\1{Colors.RESET}{self.theme["popup_fg"]}', text)
+            link_text, url = match.group(1), match.group(2)
+            # FIX: Use specific "off" codes and reset only the foreground color.
+            # This no longer uses the aggressive RESET and will not affect the background.
+            return (
+                f"{Colors.UNDERLINE}{Colors.BLUE}{link_text}{Colors.UNDERLINE_OFF}"
+                f"{self.theme['popup_fg']}"
+            )
+
+        # Use a robust regex that handles special characters in links
+        text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', replace_link, text)
+
+        # Use specific "off" codes for other styles
+        text = re.sub(r'\*\*(.*?)\*\*', f'{Colors.BOLD}\\1{Colors.BOLD_OFF}', text)
+        text = re.sub(r'~~(.*?)~~', f'{Colors.STRIKETHROUGH}\\1{Colors.STRIKETHROUGH_OFF}', text)
+        text = re.sub(r'\*(.*?)\*', f'{Colors.ITALIC}\\1{Colors.ITALIC_OFF}', text)
+
         text = re.sub(r'`(.*?)`', f'{Colors.INLINE_CODE_BG}\\1{Colors.RESET}', text)
         text = re.sub(r'>!(.*?)!<', f'\x1b[30;40m\\1{Colors.RESET}', text)
+
         return text
 
     def _draw_popup_border(self, start_x, start_y, pop_w, pop_h, title=""):
@@ -583,6 +666,46 @@ class NewsFeedMenu:
         for i in range(pop_h - 2):
             sys.stdout.write(f'\x1b[{start_y + 1 + i};{start_x + 1}H{" " * (pop_w - 2)}')
 
+    def _prepare_comment_lines(self):
+        """Processes the comment tree into a list of drawable lines."""
+        if not self.comment_tree:
+            self.comment_lines_to_draw = []
+            return
+
+        self.visible_comments = []
+        self._flatten_comment_tree(self.comment_tree, self.visible_comments)
+
+        pop_w, term_h = os.get_terminal_size()
+        cont_w = int(pop_w * 0.9) - 4
+        pop_fg = self.theme['popup_fg']
+
+        lines = []
+        for c in self.visible_comments:
+            comment_index = self.visible_comments.index(c)
+            header = f"{'[-] ' if c.children and not c.is_collapsed else '[+] ' if c.children else ''}{Colors.YELLOW}{c.author}{pop_fg} ({c.score}):"
+            lines.append({'text': f"{'  '*c.depth}{header}", 'idx': comment_index})
+
+            formatted_body = self._format_comment_body(c.body)
+            for line in formatted_body.split('\n'):
+                prefix, quote_offset = "", 0
+                is_quote = line.startswith('>')
+
+                if is_quote:
+                    line = line[1:].lstrip()
+                    prefix = f"{Colors.GREEN}┃ {Colors.RESET}"
+                    quote_offset = 2
+
+                wrapped_lines = textwrap.wrap(line, width=cont_w - len("  "*c.depth) - quote_offset)
+                for wrapped_line in wrapped_lines:
+                    # If it's a quote, color the text grey. Otherwise, use the default.
+                    if is_quote:
+                        styled_line = f"{Colors.LIGHT_GREY}{wrapped_line}{pop_fg}"
+                    else:
+                        styled_line = wrapped_line
+                    lines.append({'text': f"{'  '*c.depth}{prefix}{styled_line}", 'idx': comment_index})
+
+        self.comment_lines_to_draw = lines
+
     def _draw_confirmation_popup(self, items_data, prompt):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
@@ -595,20 +718,42 @@ class NewsFeedMenu:
     def _draw_import_instructions(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        pop_w, pop_h = 74, 11
+        # Adjusted height for the new lines of text
+        pop_w, pop_h = 70, 19
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
-        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Import Instructions")
-        pop_bg = self.theme['popup_bg']
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Import from Backup")
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+
+        executable_name = "AlienNewsFeed.exe" if sys.platform == "win32" else "./AlienNewsFeed"
+
+        # Updated content to show both import command examples
         content = [
-            f"{Colors.YELLOW}Your config folder has been opened.",
-            f"{self.theme['popup_fg']}To restore a backup, you can either:",
-            f"{Colors.BOLD}A) Manually replace the database file:{self.theme['popup_fg']}",
-            "  1. Close this application.", "  2. In the folder that opened, replace 'news_feed.db' with your backup.",
-            f"{Colors.BOLD}B) Use the command-line option on next launch:{self.theme['popup_fg']}",
-            "  > python main.py --import /path/to/your/backup.db", "",
-            f"{Colors.CYAN}Press [ESC] to dismiss this message.{self.theme['popup_fg']}"
+            f"{Colors.YELLOW}There are two ways to import a backup:",
+            "",
+            f"{Colors.BOLD}A) Manually Replace The File:{Colors.BOLD_OFF}",
+            "   1. Close this application.",
+            "   2. Replace the database file in the config folder below",
+            "      with your backup file.",
+            "",
+            f"{Colors.BOLD}B) Use the Command-Line on Next Launch:{Colors.BOLD_OFF}",
+            f"   > {Colors.CYAN}{executable_name} --import /path/to/backup.db{pop_fg}",
+            f"     {Colors.LIGHT_GREY}(Imports to the currently active profile){pop_fg}",
+            "",
+            f"   > {Colors.CYAN}{executable_name} --import /path/to/backup.db --profile <NAME>{pop_fg}",
+            "",
+            f"{Colors.YELLOW}Your config folder path is:",
+            f"{Colors.CYAN}{CONFIG_DIR.resolve()}",
+            "",
+            f"{Colors.LIGHT_GREY}Press [ESC] to dismiss this message."
         ]
-        for i, line in enumerate(content): sys.stdout.write(f"\x1b[{start_y + 1 + i};{start_x + 2}H{pop_bg}{line.ljust(pop_w - 4)}{Colors.RESET}")
+
+        for i, line in enumerate(content):
+            row = start_y + 1 + i
+            plain_text_len = len(re.sub(r'\x1b\[[0-9;]*m', '', str(line)))
+            padding = ' ' * max(0, (pop_w - 4) - plain_text_len)
+
+            sys.stdout.write(f"\x1b[{row};{start_x + 2}H{pop_bg}{pop_fg}{line}{padding}{Colors.RESET}")
+
         sys.stdout.flush()
 
     def _draw_help_menu(self, items_data):
@@ -711,19 +856,31 @@ class NewsFeedMenu:
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        pop_w, pop_h = 70, 14
+        # Increase popup height to accommodate new help text footer
+        pop_w, pop_h = 70, 16
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Settings")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
-        blocked_text, highlight_text, mute_text = self.blocked_domains_setting, self.highlight_keywords_setting, self.mute_keywords_setting
+
+        blocked_text = self.blocked_domains_setting
+        highlight_text = self.highlight_keywords_setting
+        mute_text = self.mute_keywords_setting
         if self.settings_selected_index == 3: blocked_text += "_"
         if self.settings_selected_index == 4: highlight_text += "_"
         if self.settings_selected_index == 5: mute_text += "_"
+
         clock_status = "< Enabled >" if self.show_clock_setting else "< Disabled >"
         options = [
-            f"Refresh Time (s): < {self.fetch_interval_setting} >", f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
-            f"Show Clock: {clock_status}", f"Blocked Domains: {blocked_text}", f"Highlight Words: {highlight_text}", f"Mute Words: {mute_text}",
-            "SEPARATOR", "Export Bookmarks to HTML", "Export Full Backup", "Import from Backup"
+            f"Refresh Time (s): < {self.fetch_interval_setting} >",
+            f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
+            f"Show Clock: {clock_status}",
+            f"Blocked Domains: {blocked_text}",
+            f"Highlight Words: {highlight_text}",
+            f"Mute Words: {mute_text}",
+            "SEPARATOR",
+            "Export Bookmarks to HTML",
+            "Export Full Backup",
+            "Import from Backup"
         ]
         divider_pos = 6
         for i, option in enumerate(options):
@@ -738,6 +895,27 @@ class NewsFeedMenu:
                 sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{text}{Colors.RESET}")
             else:
                 sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text}{Colors.RESET}")
+
+        # --- NEW: Add a contextual help footer ---
+        help_footer_y = start_y + pop_h - 2
+
+        # Draw a separator line for the help text area
+        sys.stdout.write(f"\x1b[{help_footer_y -1};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
+
+        # Define the help strings for relevant settings
+        help_strings = {
+            3: "Enter comma-separated domains (e.g., site.com,another.org)",
+            4: "Enter comma-separated words to highlight article titles",
+            5: "Enter comma-separated words to hide articles from the feed"
+        }
+
+        # Get the help text for the currently selected item, or an empty string
+        help_text = help_strings.get(self.settings_selected_index, "")
+
+        # Draw the help text
+        sys.stdout.write(f"\x1b[{help_footer_y};{start_x+2}H{pop_bg}{Colors.CYAN}{help_text.ljust(pop_w - 4)}")
+
+        sys.stdout.write(Colors.RESET)
         sys.stdout.flush()
 
     def _draw_comments(self, items_data):
@@ -747,40 +925,38 @@ class NewsFeedMenu:
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Comments")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
-        sys.stdout.write(f'\x1b[{start_y+pop_h-2};{start_x}H├' + '─'*(pop_w-2) + '┤')
+
+        # FIX: Added the theme's background and foreground colors to this line
+        sys.stdout.write(f"\x1b[{start_y+pop_h-2};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
+
         if self.comment_view_status:
             sys.stdout.write(f'\x1b[{start_y+2};{start_x+2}H{pop_bg}{pop_fg}{self.comment_view_status.ljust(pop_w-4)}{Colors.RESET}')
         elif self.comment_tree:
-            self.visible_comments = []; self._flatten_comment_tree(self.comment_tree, self.visible_comments)
+            lines = self.comment_lines_to_draw
             cont_w, cont_h = pop_w - 4, pop_h - 4
-            lines, sel_line = [], -1
-            for i, c in enumerate(self.visible_comments):
-                if i == self.comment_selected_index: sel_line = len(lines)
-                indicator = "[+] " if c.children and c.is_collapsed else "[-] " if c.children else ""
-                header = f"{indicator}{Colors.YELLOW}{c.author}{pop_fg} ({c.score}):"
-                lines.append({'text': f"{'  '*c.depth}{header}", 'idx': i})
-                formatted_body = self._format_comment_body(c.body)
-                for line in formatted_body.split('\n'):
-                    prefix, quote_offset = "", 0
-                    if line.startswith('>'):
-                        line = line[1:].lstrip()
-                        prefix = f"{Colors.GREEN}┃ {Colors.RESET}{pop_fg}"
-                        quote_offset = 2
-                    for wrapped_line in textwrap.wrap(line, width=cont_w - len("  "*c.depth) - quote_offset):
-                        lines.append({'text': f"{'  '*c.depth}{prefix}{wrapped_line}", 'idx': i})
+
+            sel_line = next((i for i, line in enumerate(lines) if line['idx'] == self.comment_selected_index), -1)
+
             if sel_line != -1:
                 if sel_line < self.comment_scroll_top: self.comment_scroll_top = sel_line
                 elif sel_line >= self.comment_scroll_top + cont_h:
                     self.comment_scroll_top = min(sel_line - cont_h + 2, max(0, len(lines) - cont_h))
+
             for i in range(cont_h):
                 line_idx = self.comment_scroll_top + i
                 if line_idx >= len(lines): break
-                line, row = lines[line_idx], start_y+1+i
-                output = line['text'].ljust(cont_w)
-                if line['idx'] == self.comment_selected_index:
-                    sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{output}{Colors.RESET}")
+                line_data, row = lines[line_idx], start_y+1+i
+                is_sel = line_data['idx'] == self.comment_selected_index
+
+                text_to_draw = line_data['text']
+                plain_text_len = len(re.sub(r'\x1b\[[0-9;]*m', '', text_to_draw))
+                padding = ' ' * max(0, cont_w - plain_text_len)
+
+                if is_sel:
+                    sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{text_to_draw}{padding}{Colors.RESET}")
                 else:
-                    sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{output}{Colors.RESET}")
+                    sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text_to_draw}{padding}{Colors.RESET}")
+
         help_text = "[↑/↓] Scroll | [←/→] Top-Level | [↵]Collapse | [ESC]Back".center(pop_w - 2)
         sys.stdout.write(f"\x1b[{start_y+pop_h-2};{start_x+1}H{pop_bg}{pop_fg}{help_text}{Colors.RESET}")
         sys.stdout.flush()
@@ -892,13 +1068,20 @@ class NewsFeedMenu:
                 if current_mode == "Bookmarks": items_data = [a for a in self.all_articles if a['is_bookmarked']]
                 elif current_mode == "Highlights": items_data = [a for a in self.all_articles if any(kw in a['title'].lower() for kw in HIGHLIGHT_KEYWORDS)]
                 elif current_mode == "Unseen": items_data = [a for a in self.all_articles if a['is_new']]
-                # FIX: Changed "Has Read" to "Read" to match the view_modes list
                 elif current_mode == "Read": items_data = [a for a in self.all_articles if a['is_read']]
-                elif current_mode == "Video Only": items_data = [a for a in self.all_articles if get_domain_from_url(a.get('url')) in ['youtube.com', 'youtu.be', 'vimeo.com']]
+                elif current_mode == "Video": items_data = [a for a in self.all_articles if get_domain_from_url(a.get('url')) in ['youtube.com', 'youtu.be', 'vimeo.com']]
                 else: items_data = self.all_articles
-                if self.is_search_view and not self.search_input_active:
+
+                # FIX: Apply the search filter whenever the search view is active.
+                if self.is_search_view:
                     q = self.search_query.lower()
-                    items_data = [a for a in items_data if q in a['title'].lower() or q in a.get('source_domain','').lower()]
+                    items_data = [
+                        a for a in items_data if
+                        q in a['title'].lower()
+                        or q in a.get('source_domain','').lower()
+                        or q in a.get('subreddit', '').lower()
+                    ]
+
                 self.force_regenerate_view = False
                 self.needs_redraw = True
 
@@ -1002,50 +1185,68 @@ class NewsFeedMenu:
 
     def handle_settings_input(self, key):
         global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS
+
+        # --- Handle Exit First ---
         if key == "ESC":
+            # Save general settings
             self.blocked_domains_setting = self.blocked_domains_setting.strip(',')
             BLOCKED_DOMAINS = {d.strip() for d in self.blocked_domains_setting.split(',') if d.strip()}
-            save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.show_clock_setting, BLOCKED_DOMAINS)
+            save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting,
+                                 self.show_clock_setting, BLOCKED_DOMAINS)
+
+            # Save profile-specific keyword settings
             self.highlight_keywords_setting = self.highlight_keywords_setting.strip(',')
             self.mute_keywords_setting = self.mute_keywords_setting.strip(',')
             HIGHLIGHT_KEYWORDS = {kw.strip().lower() for kw in self.highlight_keywords_setting.split(',') if kw.strip()}
             MUTE_KEYWORDS = {kw.strip().lower() for kw in self.mute_keywords_setting.split(',') if kw.strip()}
             save_profile_keywords(self.active_profile, self.highlight_keywords_setting, self.mute_keywords_setting)
-            self.is_settings_view, self.force_regenerate_view = False, True
+
+            self.is_settings_view = False
+            self.force_regenerate_view = True
             self.needs_redraw = True
             return
 
-        if key == "UP": self.settings_selected_index = max(0, self.settings_selected_index - 1)
-        elif key == "DOWN": self.settings_selected_index = min(8, self.settings_selected_index + 1)
+        # --- Handle Navigation ---
+        if key == "UP":
+            self.settings_selected_index = max(0, self.settings_selected_index - 1)
+        elif key == "DOWN":
+            self.settings_selected_index = min(8, self.settings_selected_index + 1)
+
+        # --- Handle Index-Specific Actions ---
         else:
             idx = self.settings_selected_index
-            if idx == 0:
+            if idx == 0:  # Refresh Time
                 if key == "LEFT": self.fetch_interval_setting = max(15, self.fetch_interval_setting - 15)
                 elif key == "RIGHT": self.fetch_interval_setting += 15
-            elif idx == 1:
+            elif idx == 1:  # Theme
                 if key == "RIGHT": self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_names)
                 elif key == "LEFT": self.current_theme_index = (self.current_theme_index - 1 + len(self.theme_names)) % len(self.theme_names)
                 self.theme = THEMES[self.theme_names[self.current_theme_index]]
-            elif idx == 2:
+            elif idx == 2:  # Show Clock
                 if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
-            elif idx in [3, 4, 5]:
-                target_attr = ["blocked_domains_setting", "highlight_keywords_setting", "mute_keywords_setting"][idx - 3]
-                current_val = getattr(self, target_attr)
-                if key == "BACKSPACE": setattr(self, target_attr, current_val[:-1])
-                elif len(key) == 1 and key.isprintable(): setattr(self, target_attr, current_val + key)
-            elif key == "ENTER":
-                if idx == 6:
+            elif idx == 3:  # Blocked Domains
+                if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
+            elif idx == 4:  # Highlight Keywords
+                if key == "BACKSPACE": self.highlight_keywords_setting = self.highlight_keywords_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.highlight_keywords_setting += key
+            elif idx == 5:  # Mute Keywords
+                if key == "BACKSPACE": self.mute_keywords_setting = self.mute_keywords_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.mute_keywords_setting += key
+            elif key == "ENTER": # Handle action items at the bottom
+                if idx == 6:  # Export Bookmarks
                     export_bookmarks_to_html()
                     self.status_message, self.status_message_timer, self.is_settings_view = "Bookmarks exported to backups folder!", 50, False
-                elif idx == 7:
+                elif idx == 7:  # Export Full Backup
                     backups_dir = CONFIG_DIR / "backups"
                     backups_dir.mkdir(exist_ok=True)
                     dest_path = backups_dir / f"backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
                     shutil.copy(DB_FILE, dest_path)
                     self.status_message, self.status_message_timer, self.is_settings_view = f"Backup saved to backups folder!", 50, False
-                elif idx == 8:
-                    webbrowser.open(CONFIG_DIR.resolve().as_uri())
-                    self.is_settings_view, self.is_import_view = False, True
+                elif idx == 8:  # Import from Backup
+                    self.is_settings_view = False
+                    self.is_import_view = True
+
         self.needs_redraw = True
 
     def handle_comment_view_input(self, key):
@@ -1061,21 +1262,29 @@ class NewsFeedMenu:
                     if self.visible_comments[i].depth == 0: self.comment_selected_index = i; break
             elif key == "ENTER":
                 selected_comment = self.visible_comments[self.comment_selected_index]
-                if selected_comment.children: selected_comment.is_collapsed = not selected_comment.is_collapsed
+                if selected_comment.children:
+                    selected_comment.is_collapsed = not selected_comment.is_collapsed
+                    # Re-prepare lines after collapsing/expanding
+                    self._prepare_comment_lines()
             if original_index != self.comment_selected_index: self.needs_redraw = True
-        if key == "ESC": self.is_comment_view, self.comment_tree = False, []
+        if key == "ESC":
+            self.is_comment_view, self.comment_tree = False, []
         self.needs_redraw = True
 
     def handle_search_view_input(self, key, items_data):
         if self.search_input_active:
             if key == "ENTER":
                 self.search_input_active = False
-                self.force_regenerate_view = True # Apply search
+                # No need to force regen here, as the view won't change
             elif key == "ESC":
                 self.is_search_view, self.search_query, self.search_input_active = False, "", False
                 self.force_regenerate_view = True # Clear search
-            elif key == "BACKSPACE": self.search_query = self.search_query[:-1]
-            elif len(key) == 1 and key.isprintable(): self.search_query += key
+            elif key == "BACKSPACE":
+                self.search_query = self.search_query[:-1]
+                self.force_regenerate_view = True # Force regen on change
+            elif len(key) == 1 and key.isprintable():
+                self.search_query += key
+                self.force_regenerate_view = True # Force regen on change
         else:
             if key == '/': self.search_input_active = True
             elif key == "ESC":
@@ -1090,8 +1299,11 @@ class NewsFeedMenu:
         original_index = self.selected_index
         if key == "UP": self.selected_index = max(0, self.selected_index - 1)
         elif key == "DOWN": self.selected_index = min(len(items_data) - 1, self.selected_index + 1)
-        elif key == "LEFT": self.selected_index = max(0, self.selected_index - self.page_jump)
-        elif key == "RIGHT": self.selected_index = min(len(items_data) - 1, self.selected_index + self.page_jump)
+        elif key == "LEFT" or key == "PGUP": self.selected_index = max(0, self.selected_index - self.page_jump)
+        elif key == "RIGHT" or key == "PGDOWN": self.selected_index = min(len(items_data) - 1, self.selected_index + self.page_jump)
+        # ADD THESE TWO ELIF BLOCKS
+        elif key == "HOME": self.selected_index = 0
+        elif key == "END": self.selected_index = len(items_data) - 1
         elif key == "DELETE":
             if items_data: self.article_to_delete, self.is_delete_confirm_view = items_data[self.selected_index], True
         elif key == "b":
@@ -1135,6 +1347,7 @@ class NewsFeedMenu:
         self.needs_redraw = True
 
     def _draw_profile_manager(self, items_data):
+        """Draws the fully functional Profile Manager UI."""
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
         pop_w, pop_h = 74, max(12, len(self.profiles) + 8)
@@ -1143,7 +1356,8 @@ class NewsFeedMenu:
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
         for i, name in enumerate(self.profiles):
             row = start_y + 1 + i
-            if row >= start_y + pop_h - 4: break
+            # Adjusted to leave space for a 2-line footer (prompt + help bar)
+            if row >= start_y + pop_h - 3: break
             prefix = "» " if i == self.profile_selected_index else "  "
             suffix = " (Active)" if name == self.active_profile else ""
             display_text = f"{prefix}{name}{suffix}".ljust(pop_w - 4)
@@ -1151,13 +1365,19 @@ class NewsFeedMenu:
                 sys.stdout.write(f"\x1b[{row};{start_x + 2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{display_text}{Colors.RESET}")
             else:
                 sys.stdout.write(f"\x1b[{row};{start_x + 2}H{pop_bg}{pop_fg}{display_text}{Colors.RESET}")
-        footer_y = start_y + pop_h - 2
-        sys.stdout.write(f"\x1b[{footer_y - 1};{start_x}H├{'─' * (pop_w - 2)}┤")
+
         prompt_y = start_y + pop_h - 3
+
         if self.profile_input_active:
             prompt_map = {'create': "Enter new profile name: ", 'rename': "Enter new name for profile: ", 'edit': "Enter subreddits (e.g. news+world): "}
             prompt = prompt_map.get(self.profile_action, "")
-            input_text = f"{prompt}{self.profile_input_query}_"
+
+            available_width = (pop_w - 4) - len(prompt) - 1
+            display_query = self.profile_input_query
+            if len(display_query) > available_width:
+                display_query = display_query[-available_width:]
+
+            input_text = f"{prompt}{display_query}_"
             sys.stdout.write(f"\x1b[{prompt_y};{start_x + 2}H{pop_bg}{Colors.YELLOW}{input_text.ljust(pop_w - 4)}{Colors.RESET}")
             help_text = "[Enter] Confirm | [ESC] Cancel"
         elif self.profile_action == 'delete':
@@ -1169,7 +1389,19 @@ class NewsFeedMenu:
             status_text = self.profile_status_message.ljust(pop_w - 4)
             sys.stdout.write(f"\x1b[{prompt_y};{start_x + 2}H{pop_bg}{Colors.GREEN}{status_text}{Colors.RESET}")
             help_text = "[↵]Switch [n]New [r]Rename [e]Edit [d]Delete [ESC]Back"
-        sys.stdout.write(f"\x1b[{footer_y};{start_x + 1}H{pop_bg}{pop_fg}{help_text.center(pop_w - 2)}{Colors.RESET}")
+
+        # --- FIX: Consolidated Help Bar Drawing ---
+        footer_y = start_y + pop_h - 2
+        help_text_padded = f" {help_text} "
+
+        content_width = pop_w - 2
+        remaining_width = content_width - len(help_text_padded)
+        left_dashes = remaining_width // 2
+        right_dashes = remaining_width - left_dashes
+
+        full_footer_bar = f"├{'─' * left_dashes}{help_text_padded}{'─' * right_dashes}┤"
+
+        sys.stdout.write(f"\x1b[{footer_y};{start_x}H{pop_bg}{pop_fg}{full_footer_bar}{Colors.RESET}")
         sys.stdout.flush()
 
     def handle_profile_input(self, key):
@@ -1253,15 +1485,38 @@ def export_database():
         print(f"Error: Database file not found at {DB_FILE}")
         sys.exit(1)
 
-def import_database(path_str):
+def import_database(path_str, profile_name):
+    """Headless import of a database file to a specific profile with confirmation."""
     backup_path = Path(path_str)
     if not backup_path.is_file():
         print(f"Error: Backup file not found at '{backup_path}'")
         sys.exit(1)
-    print("--- WARNING ---\nThis will permanently overwrite your current database.")
-    print(f"Current DB: {DB_FILE}\nImporting from: {backup_path}")
-    if input("Are you sure you want to continue? (y/n): ").lower().strip() in ['y', 'yes']:
-        shutil.copy(backup_path, DB_FILE)
+
+    # Find the target database file based on the profile name
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE)
+    section_name = f"Profile:{profile_name}"
+
+    if not config.has_section(section_name):
+        print(f"Error: Profile '{profile_name}' not found in config file.")
+        sys.exit(1)
+
+    db_filename = config.get(section_name, 'DatabaseFile', fallback=None)
+    if not db_filename:
+        print(f"Error: DatabaseFile not configured for profile '{profile_name}'.")
+        sys.exit(1)
+
+    target_db_path = CONFIG_DIR / db_filename
+
+    # Display a specific and clear warning message
+    print("--- ⚠️ WARNING ---")
+    print(f"This will permanently overwrite the database for the '{profile_name}' profile.")
+    print(f"Target DB: {target_db_path}")
+    print(f"Importing from: {backup_path}")
+    confirm = input("Are you sure you want to continue? (y/n): ").lower().strip()
+
+    if confirm in ['y', 'yes']:
+        shutil.copy(backup_path, target_db_path)
         print("Import successful. Starting application...")
     else:
         print("Import cancelled.")
@@ -1272,6 +1527,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="A terminal-based news feed reader.")
     parser.add_argument('--export', action='store_true', help="Export a full backup of the database and exit.")
     parser.add_argument('--import', dest='import_path', metavar='PATH', help="Import a database from the specified path and start the app.")
+    parser.add_argument('--profile', dest='profile_name', metavar='NAME', help="Specify a profile to import the database into (defaults to active profile).")
     args = parser.parse_args()
     pid_file = pid.PidFile(pidname='aliennewsfeed', piddir=CONFIG_DIR)
 
@@ -1293,7 +1549,10 @@ if __name__ == '__main__':
             export_database()
             sys.exit(0)
         if args.import_path:
-            import_database(args.import_path)
+            # If --profile is specified, use it. Otherwise, use the active profile.
+            target_profile = args.profile_name if args.profile_name else active_profile
+            import_database(args.import_path, target_profile)
+            # Prevent the import from running again if the app restarts
             args.import_path = None
 
         print(f"Initializing AlienNewsFeed...")
