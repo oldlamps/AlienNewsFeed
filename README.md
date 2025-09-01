@@ -4,7 +4,8 @@ A customizable, terminal-based news reader that aggregates articles from your fa
 
 ## Philosophy & Motivation
 
-I designed this project to fulfill a need that I couldn't get anywhere else in a way I wanted. What's the point? Well one reason is I feel Reddit is uniquely curated in a way RSS feeds are not. Having a steady flow of articles from your favorite subreddits cataloged in a private database, searchable, bookmarkable and exportable was a really appealing idea. Hope you get some use out of what I'm trying to accomplish. Remember to be respectful of the Reddit API and don't poll too often.
+Greetings Earthlings. I designed this project to fulfill a need that I couldn't get anywhere else in a way I needed to.
+What's the point? Well one reason is I feel Reddit is uniquely curated in a way RSS feeds are not. Having a steady flow of articles from your favorite subreddits categorized by profile, cataloged in a private database, searchable, bookmarkable and exportable was a really appealing idea. I Hope you think so tooget some use out of what I'm trying to accomplish. Remember to be respectful of the Reddit API and don't poll too often.
 
 \-- Old Lamps
 
@@ -56,7 +57,7 @@ You need Python 3.6+ to run this script.
 
    ```
 
-## ⌨️ Usage
+## Usage
 
 ### Interactive Mode
 
@@ -140,7 +141,7 @@ The application supports headless operations for easy scripting and backups.
   This will save a timestamped backup of your database to the `backups` folder and exit.
 * **Import from a backup:**
   ```
-  python main.py --import /path/to/your/backup.db
+  python alien.py --import /path/to/your/backup.db
 
 
   ```
