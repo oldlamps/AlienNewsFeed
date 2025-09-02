@@ -551,6 +551,7 @@ class NewsFeedMenu:
         self.highlight_keywords_setting = ','.join(sorted(list(HIGHLIGHT_KEYWORDS)))
         self.mute_keywords_setting = ','.join(sorted(list(MUTE_KEYWORDS)))
         self.last_displayed_minute = -1
+        self.last_known_width, self.last_known_height = os.get_terminal_size()
 
         self.status_message = ""
         self.status_message_timer = 0
@@ -558,6 +559,7 @@ class NewsFeedMenu:
         self.action_menu_article = None
         self.action_menu_selected_index = 0
         self.article_to_delete = None
+        self.master_article_list = []
 
     def _get_action_menu_options(self):
         options = {
@@ -1041,9 +1043,15 @@ class NewsFeedMenu:
 
     def show(self):
         global HAS_NEW_ARTICLES, NEEDS_RESTART
-        master_article_list = get_articles_from_db()
+        self.master_article_list = get_articles_from_db()
         items_data = []
         while self.is_running:
+            # Check for terminal resize
+            current_width, current_height = os.get_terminal_size()
+            if (current_width, current_height) != (self.last_known_width, self.last_known_height):
+                self.needs_redraw = True
+                self.last_known_width, self.last_known_height = current_width, current_height
+
             if NEEDS_RESTART:
                 self.is_running = False
                 continue
@@ -1052,7 +1060,7 @@ class NewsFeedMenu:
                 if self.status_message_timer == 0: self.status_message, self.needs_redraw = "", True
             if ARTICLES_UPDATED.is_set():
                 if HAS_NEW_ARTICLES:
-                    master_article_list = get_articles_from_db()
+                    self.master_article_list = get_articles_from_db()
                     with data_lock:
                         if HAS_NEW_ARTICLES: self.selected_index, self.scroll_top, HAS_NEW_ARTICLES = 0,0,False
                 self.force_regenerate_view = True
@@ -1063,7 +1071,7 @@ class NewsFeedMenu:
                     self.last_displayed_minute, self.needs_redraw = current_minute, True
 
             if self.force_regenerate_view:
-                self.all_articles = [a for a in master_article_list if not any(kw in a['title'].lower() for kw in MUTE_KEYWORDS)] if MUTE_KEYWORDS else master_article_list
+                self.all_articles = [a for a in self.master_article_list if not any(kw in a['title'].lower() for kw in MUTE_KEYWORDS)] if MUTE_KEYWORDS else self.master_article_list
                 current_mode = self.view_modes[self.current_view_mode_index]
                 if current_mode == "Bookmarks": items_data = [a for a in self.all_articles if a['is_bookmarked']]
                 elif current_mode == "Highlights": items_data = [a for a in self.all_articles if any(kw in a['title'].lower() for kw in HIGHLIGHT_KEYWORDS)]
@@ -1072,7 +1080,6 @@ class NewsFeedMenu:
                 elif current_mode == "Video": items_data = [a for a in self.all_articles if get_domain_from_url(a.get('url')) in ['youtube.com', 'youtu.be', 'vimeo.com']]
                 else: items_data = self.all_articles
 
-                # FIX: Apply the search filter whenever the search view is active.
                 if self.is_search_view:
                     q = self.search_query.lower()
                     items_data = [
@@ -1113,12 +1120,21 @@ class NewsFeedMenu:
             else: self.handle_main_view_input(key, items_data)
 
     def handle_delete_confirm_input(self, key, items_data):
+        # If 'y' is pressed, perform the deletion.
         if key.lower() == 'y':
             if self.article_to_delete:
+                # Delete from the database
                 block_and_delete_article(self.article_to_delete['url'])
-                self.all_articles = [a for a in self.all_articles if a['url'] != self.article_to_delete['url']]
+
+                # Delete from the in-memory master list to ensure the UI updates
+                self.master_article_list = [a for a in self.master_article_list if a['url'] != self.article_to_delete['url']]
+
+                # Trigger a full view regeneration and show a confirmation message
                 self.force_regenerate_view = True
                 self.status_message, self.status_message_timer = "Article deleted.", 50
+
+        # After any key press ('y' or any other key to cancel),
+        # reset the state to exit the confirmation view.
         self.is_delete_confirm_view, self.article_to_delete = False, None
         self.needs_redraw = True
 
@@ -1301,7 +1317,6 @@ class NewsFeedMenu:
         elif key == "DOWN": self.selected_index = min(len(items_data) - 1, self.selected_index + 1)
         elif key == "LEFT" or key == "PGUP": self.selected_index = max(0, self.selected_index - self.page_jump)
         elif key == "RIGHT" or key == "PGDOWN": self.selected_index = min(len(items_data) - 1, self.selected_index + self.page_jump)
-        # ADD THESE TWO ELIF BLOCKS
         elif key == "HOME": self.selected_index = 0
         elif key == "END": self.selected_index = len(items_data) - 1
         elif key == "DELETE":
