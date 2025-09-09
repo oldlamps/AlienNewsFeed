@@ -221,6 +221,7 @@ DB_FILE = None
 SUBREDDITS_STRING = "news+worldnews+politics+technology"
 FETCH_INTERVAL_SECONDS = 300
 SHOW_CLOCK = True
+VIDEO_PLAYER_PATH = "mpv"
 BLOCKED_DOMAINS = set()
 NEEDS_RESTART = False
 PAGE_JUMP = 10
@@ -276,7 +277,7 @@ def setup_config():
         with open(CONFIG_FILE, 'w') as f: config.write(f)
 
 def load_profile_settings():
-    global DB_FILE, SUBREDDITS_STRING, FETCH_INTERVAL_SECONDS, SHOW_CLOCK, BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS
+    global DB_FILE, SUBREDDITS_STRING, FETCH_INTERVAL_SECONDS, SHOW_CLOCK, BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
     active_profile = config.get('Settings', 'ActiveProfile', fallback='Main')
@@ -291,6 +292,8 @@ def load_profile_settings():
     DB_FILE = CONFIG_DIR / db_filename
     FETCH_INTERVAL_SECONDS = general_settings.getint('FetchInterval', 60)
     SHOW_CLOCK = general_settings.getboolean('ShowClock', True)
+    # --- ADD THIS LINE ---
+    VIDEO_PLAYER_PATH = general_settings.get('VideoPlayerPath', 'mpv')
     blocked_str = general_settings.get('BlockedDomains', '')
     BLOCKED_DOMAINS = {domain.strip() for domain in blocked_str.split(',') if domain.strip()}
     highlight_str = profile_settings.get('HighlightKeywords', '')
@@ -299,7 +302,7 @@ def load_profile_settings():
     MUTE_KEYWORDS = {kw.strip().lower() for kw in mute_str.split(',') if kw.strip()}
     return general_settings.get('Theme', 'Default'), active_profile
 
-def save_general_settings(theme_name, fetch_interval, show_clock, blocked_domains):
+def save_general_settings(theme_name, fetch_interval, show_clock, blocked_domains, video_player_path):
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
     blocked_domains_str = ','.join(sorted(list(blocked_domains)))
@@ -307,7 +310,9 @@ def save_general_settings(theme_name, fetch_interval, show_clock, blocked_domain
         'Theme': theme_name,
         'FetchInterval': str(fetch_interval),
         'ShowClock': str(show_clock),
-        'BlockedDomains': blocked_domains_str
+        'BlockedDomains': blocked_domains_str,
+        # --- ADD THIS LINE ---
+        'VideoPlayerPath': video_player_path
     }
     with open(CONFIG_FILE, 'w') as f: config.write(f)
 
@@ -522,6 +527,11 @@ class NewsFeedMenu:
         self.is_delete_confirm_view, self.is_exit_confirm_view = False, False
         self.is_search_view, self.search_query = False, ""
         self.search_input_active = False
+
+        self.is_link_view = False
+        self.extracted_links = []
+        self.link_selected_index = 0
+
         self.page_jump = PAGE_JUMP
         self.selected_index, self.scroll_top = 0, 0
 
@@ -535,7 +545,6 @@ class NewsFeedMenu:
         self.profiles = get_all_profiles()
         self.profile_status_message = ""
 
-        # Use shorter names for cleaner display
         self.view_modes = ["All", "Unseen", "Highlights", "Bookmarks", "Video", "Read"]
         self.current_view_mode_index = 0
         self.filter_menu_selected_index = 0
@@ -547,6 +556,8 @@ class NewsFeedMenu:
         self.theme = THEMES[self.theme_names[self.current_theme_index]]
         self.fetch_interval_setting = FETCH_INTERVAL_SECONDS
         self.show_clock_setting = SHOW_CLOCK
+        # --- ADD THIS LINE ---
+        self.video_player_path_setting = VIDEO_PLAYER_PATH
         self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
         self.highlight_keywords_setting = ','.join(sorted(list(HIGHLIGHT_KEYWORDS)))
         self.mute_keywords_setting = ','.join(sorted(list(MUTE_KEYWORDS)))
@@ -560,6 +571,178 @@ class NewsFeedMenu:
         self.action_menu_selected_index = 0
         self.article_to_delete = None
         self.master_article_list = []
+
+    def _draw_settings(self, items_data):
+        self._draw(items_data, is_background=True)
+        term_w, term_h = os.get_terminal_size()
+        pop_w, pop_h = 70, 17
+        start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Settings")
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+
+        video_path_text = self.video_player_path_setting
+        blocked_text = self.blocked_domains_setting
+        highlight_text = self.highlight_keywords_setting
+        mute_text = self.mute_keywords_setting
+
+        if self.settings_selected_index == 3: video_path_text += "_"
+        if self.settings_selected_index == 4: blocked_text += "_"
+        if self.settings_selected_index == 5: highlight_text += "_"
+        if self.settings_selected_index == 6: mute_text += "_"
+
+        clock_status = "< Enabled >" if self.show_clock_setting else "< Disabled >"
+        options = [
+            f"Refresh Time (s): < {self.fetch_interval_setting} >",
+            f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
+            f"Show Clock: {clock_status}",
+            f"Video Player Path: {video_path_text}",
+            f"Blocked Domains: {blocked_text}",
+            f"Highlight Words: {highlight_text}",
+            f"Mute Words: {mute_text}",
+            "SEPARATOR",
+            "Export Bookmarks to HTML",
+            "Export Full Backup",
+            "Import from Backup"
+        ]
+        divider_pos = 7
+        for i, option in enumerate(options):
+            row = start_y + 2 + i
+            if i > divider_pos: row += 1
+            if i == divider_pos:
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{'─'*(pop_w-4)}{Colors.RESET}")
+                continue
+            text = option.ljust(pop_w - 4)
+            logical_index = i - 1 if i > divider_pos else i
+            if logical_index == self.settings_selected_index:
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{text}{Colors.RESET}")
+            else:
+                sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text}{Colors.RESET}")
+
+        help_footer_y = start_y + pop_h - 2
+        sys.stdout.write(f"\x1b[{help_footer_y -1};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
+
+        # --- This dictionary contains the corrected, shorter help text ---
+        help_strings = {
+            3: "Enter the path to your video player",
+            4: "Enter comma-separated domains (e.g., site.com,another.org)",
+            5: "Enter comma-separated words to highlight article titles",
+            6: "Enter comma-separated words to hide articles from the feed"
+        }
+        help_text = help_strings.get(self.settings_selected_index, "")
+        sys.stdout.write(f"\x1b[{help_footer_y};{start_x+2}H{pop_bg}{Colors.CYAN}{help_text.ljust(pop_w - 4)}")
+        sys.stdout.write(Colors.RESET)
+        sys.stdout.flush()
+
+    def handle_action_menu_input(self, key):
+        options_dict = self._get_action_menu_options()
+        actionable_options = {k: v for k, v in options_dict.items() if v != 'separator'}
+        actionable_keys = list(actionable_options.keys())
+        max_index = len(actionable_keys) - 1
+        if key == "ESC": self.is_action_menu_view = False
+        elif key == "UP": self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
+        elif key == "DOWN": self.action_menu_selected_index = min(max_index, self.action_menu_selected_index + 1)
+        elif key == "ENTER":
+            action = actionable_options[actionable_keys[self.action_menu_selected_index]]
+            url = self.action_menu_article['url']
+            if action == "delete_article":
+                self.article_to_delete, self.is_delete_confirm_view = self.action_menu_article, True
+            elif action == "open_article": threading.Thread(target=webbrowser.open, args=(url,)).start()
+            elif action == "watch_mpv":
+                try:
+                    kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
+                    if sys.platform == "win32": kwargs['creationflags'] = 0x00000200 | 0x00000008
+                    else: kwargs['start_new_session'] = True
+                    # --- USE THE GLOBAL VARIABLE ---
+                    subprocess.Popen([VIDEO_PLAYER_PATH, url], **kwargs)
+                    self.status_message, self.status_message_timer = "Launching video in player...", 50
+                except FileNotFoundError: self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
+            elif action == "open_comments": threading.Thread(target=webbrowser.open, args=(f"https://www.reddit.com{self.action_menu_article['permalink']}",)).start()
+            elif action == "summarize": threading.Thread(target=webbrowser.open, args=(f"https://www.perplexity.ai/?s=o&q={quote(f'summarize {url}')}",)).start()
+            elif action == "copy_url":
+                self._copy_to_clipboard(url)
+                self.status_message, self.status_message_timer = "URL copied to clipboard!", 50
+            elif action == "archive": threading.Thread(target=webbrowser.open, args=(f"https://archive.is/{quote(url)}",)).start()
+            elif action == "exclude_domain":
+                domain_to_block = get_domain_from_url(url)
+                if domain_to_block and domain_to_block not in BLOCKED_DOMAINS:
+                    BLOCKED_DOMAINS.add(domain_to_block)
+                    # --- UPDATE THIS FUNCTION CALL ---
+                    save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
+                    self.all_articles = [a for a in self.all_articles if get_domain_from_url(a.get('url')) != domain_to_block]
+                    self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
+                    self.status_message, self.status_message_timer = f"Domain '{domain_to_block}' is now hidden.", 50
+                    self.force_regenerate_view = True
+            self.is_action_menu_view = False
+        self.needs_redraw = True
+
+    def handle_settings_input(self, key):
+        global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH
+
+        if key == "ESC":
+            self.blocked_domains_setting = self.blocked_domains_setting.strip(',')
+            BLOCKED_DOMAINS = {d.strip() for d in self.blocked_domains_setting.split(',') if d.strip()}
+            # --- UPDATE THIS VARIABLE BEFORE SAVING ---
+            VIDEO_PLAYER_PATH = self.video_player_path_setting.strip()
+            # --- UPDATE THIS FUNCTION CALL ---
+            save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting,
+                                 self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
+
+            self.highlight_keywords_setting = self.highlight_keywords_setting.strip(',')
+            self.mute_keywords_setting = self.mute_keywords_setting.strip(',')
+            HIGHLIGHT_KEYWORDS = {kw.strip().lower() for kw in self.highlight_keywords_setting.split(',') if kw.strip()}
+            MUTE_KEYWORDS = {kw.strip().lower() for kw in self.mute_keywords_setting.split(',') if kw.strip()}
+            save_profile_keywords(self.active_profile, self.highlight_keywords_setting, self.mute_keywords_setting)
+
+            self.is_settings_view = False
+            self.force_regenerate_view = True
+            self.needs_redraw = True
+            return
+
+        if key == "UP":
+            self.settings_selected_index = max(0, self.settings_selected_index - 1)
+        elif key == "DOWN":
+            # --- UPDATE MAX INDEX ---
+            self.settings_selected_index = min(9, self.settings_selected_index + 1)
+        else:
+            idx = self.settings_selected_index
+            if idx == 0:  # Refresh Time
+                if key == "LEFT": self.fetch_interval_setting = max(15, self.fetch_interval_setting - 15)
+                elif key == "RIGHT": self.fetch_interval_setting += 15
+            elif idx == 1:  # Theme
+                if key == "RIGHT": self.current_theme_index = (self.current_theme_index + 1) % len(self.theme_names)
+                elif key == "LEFT": self.current_theme_index = (self.current_theme_index - 1 + len(self.theme_names)) % len(self.theme_names)
+                self.theme = THEMES[self.theme_names[self.current_theme_index]]
+            elif idx == 2:  # Show Clock
+                if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
+            # --- ADD THIS NEW BLOCK ---
+            elif idx == 3:  # Video Player Path
+                if key == "BACKSPACE": self.video_player_path_setting = self.video_player_path_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.video_player_path_setting += key
+            # --- UPDATE INDICES FOR THE FOLLOWING BLOCKS ---
+            elif idx == 4:  # Blocked Domains
+                if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
+            elif idx == 5:  # Highlight Keywords
+                if key == "BACKSPACE": self.highlight_keywords_setting = self.highlight_keywords_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.highlight_keywords_setting += key
+            elif idx == 6:  # Mute Keywords
+                if key == "BACKSPACE": self.mute_keywords_setting = self.mute_keywords_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.mute_keywords_setting += key
+            elif key == "ENTER": # Handle action items at the bottom
+                # --- UPDATE INDICES ---
+                if idx == 7:  # Export Bookmarks
+                    export_bookmarks_to_html()
+                    self.status_message, self.status_message_timer, self.is_settings_view = "Bookmarks exported to backups folder!", 50, False
+                elif idx == 8:  # Export Full Backup
+                    backups_dir = CONFIG_DIR / "backups"
+                    backups_dir.mkdir(exist_ok=True)
+                    dest_path = backups_dir / f"backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
+                    shutil.copy(DB_FILE, dest_path)
+                    self.status_message, self.status_message_timer, self.is_settings_view = f"Backup saved to backups folder!", 50, False
+                elif idx == 9:  # Import from Backup
+                    self.is_settings_view = False
+                    self.is_import_view = True
+        self.needs_redraw = True
 
     def _get_action_menu_options(self):
         options = {
@@ -578,7 +761,8 @@ class NewsFeedMenu:
             domain = get_domain_from_url(self.action_menu_article.get('url', ''))
             if domain in ['youtube.com', 'youtu.be']:
                 items = list(options.items())
-                items.insert(1, ("Watch in MPV", "watch_mpv"))
+                # --- This line is updated for the new text and action name ---
+                items.insert(1, ("Launch in Video Player", "watch_video"))
                 options = dict(items)
         return options
 
@@ -647,6 +831,33 @@ class NewsFeedMenu:
         text = re.sub(r'>!(.*?)!<', f'\x1b[30;40m\\1{Colors.RESET}', text)
 
         return text
+
+    # --- NEW: Method to extract links from a comment body ---
+    def _extract_links_from_comment(self, comment_body):
+        """Parses a comment body and returns a list of found links."""
+        # Regex for Markdown links: [text](url)
+        markdown_regex = r'\[([^\]]+)\]\((https?:\/\/[^\)]+)\)'
+        # Regex for raw http/https links in the text, avoiding those already in markdown
+        raw_link_regex = r'(?<!\]\()(https?:\/\/[^\s<>"\'`]+)'
+
+        found_links = []
+        # Find Markdown links first
+        for match in re.finditer(markdown_regex, comment_body):
+            text, url = match.groups()
+            found_links.append({"text": text.strip(), "url": url.strip()})
+
+        # Find raw links, avoiding duplicates already found in Markdown links
+        existing_urls = {link['url'] for link in found_links}
+        for match in re.finditer(raw_link_regex, comment_body):
+            url = match.group(1).strip()
+            if url not in existing_urls:
+                # For raw links, create a short, clean text representation
+                display_text = url.replace("https://", "").replace("http://", "")
+                if len(display_text) > 50:
+                    display_text = display_text[:47] + "..."
+                found_links.append({"text": display_text, "url": url})
+
+        return found_links
 
     def _draw_popup_border(self, start_x, start_y, pop_w, pop_h, title=""):
         pop_bg = self.theme['popup_bg']
@@ -858,24 +1069,31 @@ class NewsFeedMenu:
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        # Increase popup height to accommodate new help text footer
-        pop_w, pop_h = 70, 16
+        # --- Make sure popup height is increased to 17 ---
+        pop_w, pop_h = 70, 17
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Settings")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
 
+        # --- Variables to hold text being edited ---
+        video_path_text = self.video_player_path_setting
         blocked_text = self.blocked_domains_setting
         highlight_text = self.highlight_keywords_setting
         mute_text = self.mute_keywords_setting
-        if self.settings_selected_index == 3: blocked_text += "_"
-        if self.settings_selected_index == 4: highlight_text += "_"
-        if self.settings_selected_index == 5: mute_text += "_"
+
+        # --- Ensure the cursor logic indices are correct ---
+        if self.settings_selected_index == 3: video_path_text += "_"
+        if self.settings_selected_index == 4: blocked_text += "_"
+        if self.settings_selected_index == 5: highlight_text += "_"
+        if self.settings_selected_index == 6: mute_text += "_"
 
         clock_status = "< Enabled >" if self.show_clock_setting else "< Disabled >"
         options = [
             f"Refresh Time (s): < {self.fetch_interval_setting} >",
             f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
             f"Show Clock: {clock_status}",
+            # --- This is the new option that should appear ---
+            f"Video Player Path: {video_path_text}",
             f"Blocked Domains: {blocked_text}",
             f"Highlight Words: {highlight_text}",
             f"Mute Words: {mute_text}",
@@ -884,7 +1102,8 @@ class NewsFeedMenu:
             "Export Full Backup",
             "Import from Backup"
         ]
-        divider_pos = 6
+        # --- Divider position must be updated to 7 ---
+        divider_pos = 7
         for i, option in enumerate(options):
             row = start_y + 2 + i
             if i > divider_pos: row += 1
@@ -898,37 +1117,32 @@ class NewsFeedMenu:
             else:
                 sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text}{Colors.RESET}")
 
-        # --- NEW: Add a contextual help footer ---
         help_footer_y = start_y + pop_h - 2
-
-        # Draw a separator line for the help text area
         sys.stdout.write(f"\x1b[{help_footer_y -1};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
 
-        # Define the help strings for relevant settings
+        # --- The help string indices must also be updated ---
         help_strings = {
-            3: "Enter comma-separated domains (e.g., site.com,another.org)",
-            4: "Enter comma-separated words to highlight article titles",
-            5: "Enter comma-separated words to hide articles from the feed"
+            3: "Enter the full path to your video player executable (e.g., /usr/bin/mpv)",
+            4: "Enter comma-separated domains (e.g., site.com,another.org)",
+            5: "Enter comma-separated words to highlight article titles",
+            6: "Enter comma-separated words to hide articles from the feed"
         }
-
-        # Get the help text for the currently selected item, or an empty string
         help_text = help_strings.get(self.settings_selected_index, "")
-
-        # Draw the help text
         sys.stdout.write(f"\x1b[{help_footer_y};{start_x+2}H{pop_bg}{Colors.CYAN}{help_text.ljust(pop_w - 4)}")
-
         sys.stdout.write(Colors.RESET)
         sys.stdout.flush()
 
     def _draw_comments(self, items_data):
-        self._draw(items_data, is_background=True)
+        # Allow this method to be called for background drawing without clearing the whole screen
+        if not self.is_link_view:
+            self._draw(items_data, is_background=True)
+
         term_w, term_h = os.get_terminal_size()
         pop_w, pop_h = int(term_w * 0.9), int(term_h * 0.9)
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Comments")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
 
-        # FIX: Added the theme's background and foreground colors to this line
         sys.stdout.write(f"\x1b[{start_y+pop_h-2};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
 
         if self.comment_view_status:
@@ -959,9 +1173,41 @@ class NewsFeedMenu:
                 else:
                     sys.stdout.write(f"\x1b[{row};{start_x+2}H{pop_bg}{pop_fg}{text_to_draw}{padding}{Colors.RESET}")
 
-        help_text = "[↑/↓] Scroll | [←/→] Top-Level | [↵]Collapse | [ESC]Back".center(pop_w - 2)
+        help_text = "[↑/↓]Scroll [←/→]Top-Lvl [↵]Collapse [l]Links [ESC]Back".center(pop_w - 2)
         sys.stdout.write(f"\x1b[{start_y+pop_h-2};{start_x+1}H{pop_bg}{pop_fg}{help_text}{Colors.RESET}")
         sys.stdout.flush()
+
+    # --- NEW: Method to draw the link extraction popup ---
+    def _draw_link_popup(self, items_data):
+        # 1. Draw the background (the comment view)
+        self._draw_comments(items_data)
+
+        # 2. Define popup dimensions
+        term_w, term_h = os.get_terminal_size()
+        pop_w, pop_h = 70, min(15, len(self.extracted_links) + 4)
+        start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
+
+        # 3. Draw the border and title
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Links in Comment")
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+
+        # 4. List the links
+        for i, link in enumerate(self.extracted_links):
+            row = start_y + 1 + i # Start one line lower for content
+            # Truncate text and url to fit the popup width
+            display_text = f" {link['text'][:30]:<30} → {link['url'][:30]}"
+            display_text = display_text.ljust(pop_w - 4)
+
+            if i == self.link_selected_index:
+                sys.stdout.write(f"\x1b[{row};{start_x + 2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{display_text}{Colors.RESET}")
+            else:
+                sys.stdout.write(f"\x1b[{row};{start_x + 2}H{pop_bg}{pop_fg}{display_text}{Colors.RESET}")
+
+        # 5. Add a help footer
+        help_text = "[↑/↓] Select | [↵] Open | [ESC] Back".center(pop_w - 2)
+        sys.stdout.write(f"\x1b[{start_y + pop_h - 2};{start_x + 1}H{pop_bg}{pop_fg}{help_text}{Colors.RESET}")
+        sys.stdout.flush()
+
 
     def _draw(self, items_data, is_background=False):
         if not is_background: sys.stdout.write(Colors.RESET)
@@ -1098,6 +1344,7 @@ class NewsFeedMenu:
                 elif self.is_action_menu_view: self._draw_action_menu(items_data)
                 elif self.is_settings_view: self._draw_settings(items_data)
                 elif self.is_filter_menu_view: self._draw_filter_menu(items_data)
+                elif self.is_link_view: self._draw_link_popup(items_data)
                 elif self.is_comment_view: self._draw_comments(items_data)
                 elif self.is_help_view: self._draw_help_menu(items_data)
                 elif self.is_import_view: self._draw_import_instructions(items_data)
@@ -1112,6 +1359,7 @@ class NewsFeedMenu:
             elif self.is_action_menu_view: self.handle_action_menu_input(key)
             elif self.is_settings_view: self.handle_settings_input(key)
             elif self.is_filter_menu_view: self.handle_filter_menu_input(key)
+            elif self.is_link_view: self.handle_link_input(key)
             elif self.is_comment_view: self.handle_comment_view_input(key)
             elif self.is_help_view: self.handle_help_view_input(key)
             elif self.is_import_view: self.handle_import_view_input(key)
@@ -1173,14 +1421,17 @@ class NewsFeedMenu:
             if action == "delete_article":
                 self.article_to_delete, self.is_delete_confirm_view = self.action_menu_article, True
             elif action == "open_article": threading.Thread(target=webbrowser.open, args=(url,)).start()
-            elif action == "watch_mpv":
+            # --- This block is updated to match the new action and messages ---
+            elif action == "watch_video":
                 try:
                     kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
                     if sys.platform == "win32": kwargs['creationflags'] = 0x00000200 | 0x00000008
                     else: kwargs['start_new_session'] = True
-                    subprocess.Popen(['mpv', url], **kwargs)
-                    self.status_message, self.status_message_timer = "Launching video in MPV...", 50
-                except FileNotFoundError: self.status_message, self.status_message_timer = "Error: 'mpv' command not found in PATH.", 50
+                    # It correctly uses the global variable for the path
+                    subprocess.Popen([VIDEO_PLAYER_PATH, url], **kwargs)
+                    # The feedback message is now generic
+                    self.status_message, self.status_message_timer = "Launching in Video Player...", 50
+                except FileNotFoundError: self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
             elif action == "open_comments": threading.Thread(target=webbrowser.open, args=(f"https://www.reddit.com{self.action_menu_article['permalink']}",)).start()
             elif action == "summarize": threading.Thread(target=webbrowser.open, args=(f"https://www.perplexity.ai/?s=o&q={quote(f'summarize {url}')}",)).start()
             elif action == "copy_url":
@@ -1191,7 +1442,7 @@ class NewsFeedMenu:
                 domain_to_block = get_domain_from_url(url)
                 if domain_to_block and domain_to_block not in BLOCKED_DOMAINS:
                     BLOCKED_DOMAINS.add(domain_to_block)
-                    save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.show_clock_setting, BLOCKED_DOMAINS)
+                    save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
                     self.all_articles = [a for a in self.all_articles if get_domain_from_url(a.get('url')) != domain_to_block]
                     self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
                     self.status_message, self.status_message_timer = f"Domain '{domain_to_block}' is now hidden.", 50
@@ -1200,17 +1451,15 @@ class NewsFeedMenu:
         self.needs_redraw = True
 
     def handle_settings_input(self, key):
-        global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS
+        global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH
 
-        # --- Handle Exit First ---
         if key == "ESC":
-            # Save general settings
             self.blocked_domains_setting = self.blocked_domains_setting.strip(',')
             BLOCKED_DOMAINS = {d.strip() for d in self.blocked_domains_setting.split(',') if d.strip()}
+            VIDEO_PLAYER_PATH = self.video_player_path_setting.strip()
             save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting,
-                                 self.show_clock_setting, BLOCKED_DOMAINS)
+                                 self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
 
-            # Save profile-specific keyword settings
             self.highlight_keywords_setting = self.highlight_keywords_setting.strip(',')
             self.mute_keywords_setting = self.mute_keywords_setting.strip(',')
             HIGHLIGHT_KEYWORDS = {kw.strip().lower() for kw in self.highlight_keywords_setting.split(',') if kw.strip()}
@@ -1222,13 +1471,10 @@ class NewsFeedMenu:
             self.needs_redraw = True
             return
 
-        # --- Handle Navigation ---
         if key == "UP":
             self.settings_selected_index = max(0, self.settings_selected_index - 1)
         elif key == "DOWN":
-            self.settings_selected_index = min(8, self.settings_selected_index + 1)
-
-        # --- Handle Index-Specific Actions ---
+            self.settings_selected_index = min(9, self.settings_selected_index + 1)
         else:
             idx = self.settings_selected_index
             if idx == 0:  # Refresh Time
@@ -1240,29 +1486,51 @@ class NewsFeedMenu:
                 self.theme = THEMES[self.theme_names[self.current_theme_index]]
             elif idx == 2:  # Show Clock
                 if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
-            elif idx == 3:  # Blocked Domains
+            # --- This block at index 3 correctly targets the video player setting ---
+            elif idx == 3:  # Video Player Path
+                if key == "BACKSPACE": self.video_player_path_setting = self.video_player_path_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.video_player_path_setting += key
+            # --- The following indices are now correct ---
+            elif idx == 4:  # Blocked Domains
                 if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
-            elif idx == 4:  # Highlight Keywords
+            elif idx == 5:  # Highlight Keywords
                 if key == "BACKSPACE": self.highlight_keywords_setting = self.highlight_keywords_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.highlight_keywords_setting += key
-            elif idx == 5:  # Mute Keywords
+            elif idx == 6:  # Mute Keywords
                 if key == "BACKSPACE": self.mute_keywords_setting = self.mute_keywords_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.mute_keywords_setting += key
-            elif key == "ENTER": # Handle action items at the bottom
-                if idx == 6:  # Export Bookmarks
+            elif key == "ENTER":
+                if idx == 7:  # Export Bookmarks
                     export_bookmarks_to_html()
-                    self.status_message, self.status_message_timer, self.is_settings_view = "Bookmarks exported to backups folder!", 50, False
-                elif idx == 7:  # Export Full Backup
+                    self.status_message, self.status_message_timer, self.is_settings_view = "Bookmarks exported!", 50, False
+                elif idx == 8:  # Export Full Backup
                     backups_dir = CONFIG_DIR / "backups"
                     backups_dir.mkdir(exist_ok=True)
                     dest_path = backups_dir / f"backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
                     shutil.copy(DB_FILE, dest_path)
-                    self.status_message, self.status_message_timer, self.is_settings_view = f"Backup saved to backups folder!", 50, False
-                elif idx == 8:  # Import from Backup
+                    self.status_message, self.status_message_timer, self.is_settings_view = f"Backup saved!", 50, False
+                elif idx == 9:  # Import from Backup
                     self.is_settings_view = False
                     self.is_import_view = True
+        self.needs_redraw = True
 
+    # --- NEW: Handler for the link extraction popup ---
+    def handle_link_input(self, key):
+        if key == "ESC":
+            self.is_link_view = False
+            self.extracted_links = []
+        elif key == "UP":
+            self.link_selected_index = max(0, self.link_selected_index - 1)
+        elif key == "DOWN":
+            self.link_selected_index = min(len(self.extracted_links) - 1, self.link_selected_index + 1)
+        elif key == "ENTER":
+            if self.extracted_links:
+                url_to_open = self.extracted_links[self.link_selected_index]['url']
+                threading.Thread(target=webbrowser.open, args=(url_to_open,)).start()
+                # Close the popup after opening the link
+                self.is_link_view = False
+                self.extracted_links = []
         self.needs_redraw = True
 
     def handle_comment_view_input(self, key):
@@ -1280,9 +1548,22 @@ class NewsFeedMenu:
                 selected_comment = self.visible_comments[self.comment_selected_index]
                 if selected_comment.children:
                     selected_comment.is_collapsed = not selected_comment.is_collapsed
-                    # Re-prepare lines after collapsing/expanding
-                    self._prepare_comment_lines()
+                    self._prepare_comment_lines() # Re-prepare lines after collapsing/expanding
+            # --- NEW: Trigger for link extraction ---
+            elif key == 'l':
+                if self.visible_comments:
+                    selected_comment = self.visible_comments[self.comment_selected_index]
+                    links = self._extract_links_from_comment(selected_comment.body)
+                    if links:
+                        self.extracted_links = links
+                        self.link_selected_index = 0
+                        self.is_link_view = True
+                    else:
+                        self.status_message = "No links found in this comment."
+                        self.status_message_timer = 30 # Show for ~3 seconds
+
             if original_index != self.comment_selected_index: self.needs_redraw = True
+
         if key == "ESC":
             self.is_comment_view, self.comment_tree = False, []
         self.needs_redraw = True
