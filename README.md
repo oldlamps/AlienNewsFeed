@@ -7,10 +7,9 @@ A customizable, terminal-based news reader that aggregates articles from your fa
 
 ## Philosophy & Motivation
 
-Greetings Earthlings. I've designed this project to fulfill a need that I couldn't get anywhere else in a way I needed to.
-What's the point? Well one reason is I feel Reddit is uniquely curated in a way RSS feeds are not. Having a steady flow of articles from your favorite subreddits categorized by profile, cataloged in a private database, searchable, bookmarkable and exportable was a really appealing idea. All while using a terminal interface that is intutiive and easy to use. I Hope you think so too and get some use out of what I'm trying to accomplish. Remember to be respectful of the Reddit API and don't poll too often.
+Greetings Earthlings. I've designed this project to fulfill a need that I couldn't get anywhere else in a way I needed.
+Having a steady flow of articles from your favorite subreddits categorized by profile, cataloged in a private database, searchable, bookmarkable and exportable was a really appealing idea. All while using a terminal interface that is intutiive and easy to use. I Hope you get some utility out of what I'm trying to accomplish. Remember to be respectful of the Reddit API and don't poll too often.
 
-\-- Old Lamps
 
 ## Features
 
