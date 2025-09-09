@@ -999,7 +999,7 @@ class NewsFeedMenu:
             sys.stdout.write(f"\x1b[{start_y + 1 + i};{start_x + 2}H{pop_bg}{line.ljust(pop_w - 4)}{Colors.RESET}")
 
         # --- Create and draw the custom footer ---
-        footer_text = " 👽 Alien News Feed v0.2 - Created by Old Lamps "
+        footer_text = " 👽 Alien News Feed v0.31 - Created by Old Lamps "
         # Correctly calculate the display length, accounting for the double-width emoji
         footer_len = len(footer_text) + 1
 
