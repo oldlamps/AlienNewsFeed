@@ -5,12 +5,6 @@ A customizable, terminal-based news reader that aggregates articles from your fa
 <img width="90%" height="90%" alt="alien help" src="https://github.com/user-attachments/assets/b223e9d6-cc94-4b20-a71c-cbbb3e3296fc" />
 
 
-## Philosophy & Motivation
-
-Greetings Earthlings. I've designed this project to fulfill a need that I couldn't get anywhere else in a way I needed.
-Having a steady flow of articles from your favorite subreddits categorized by profile, cataloged in a private database, searchable, bookmarkable and exportable was a really appealing idea. All while using a terminal interface that is intutiive and easy to use. I Hope you get some utility out of what I'm trying to accomplish. Remember to be respectful of the Reddit API and don't poll too often.
-
-
 ## Features
 
 * **Multi-Profile Management**: You can create, rename, delete, and switch between different user profiles. Each profile can have its own unique list of subreddits and a separate database, keeping your "Work" and "Hobby" news feeds completely separate. <img width="90%" height="90%" alt="alien profile" src="https://github.com/user-attachments/assets/d8b302fd-f84e-45b9-874b-4af624ad6b3f" />
