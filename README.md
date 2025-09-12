@@ -135,7 +135,7 @@ The application supports headless operations for easy scripting and backups.
 
 * **Export a full backup:**
   ```
-  python main.py --export
+  python alien.py --export
 
 
   ```
