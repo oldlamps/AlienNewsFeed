@@ -81,45 +81,25 @@ Key(s)
 
 Action
 
-`↑` / `↓`
+`↑` / `↓`  Move selection up/down one article.
 
-Move selection up/down one article.
+`←` / `→`  Page up/down by 10 articles.
 
-`←` / `→`
+`Enter`  Open the Action Menu for the selected article.
 
-Page up/down by 10 articles.
+`b` Bookmark or un-bookmark the selected article.
 
-`Enter`
+`c` View comments for the selected article.
 
-Open the Action Menu for the selected article.
+`v` Toggle the Bookmarks view.
 
-`b`
+`/` Enter Search mode to filter articles.
 
-Bookmark or un-bookmark the selected article.
+`s` Open the Settings menu.
 
-`c`
+`h` Open the Help/About screen.
 
-View comments for the selected article.
-
-`v`
-
-Toggle the Bookmarks view.
-
-`/`
-
-Enter Search mode to filter articles.
-
-`s`
-
-Open the Settings menu.
-
-`h`
-
-Open the Help/About screen.
-
-`ESC`
-
-Go back, exit a menu, or quit the application.
+`ESC` Go back, exit a menu, or quit the application.
 
 #### Advanced Search
 
