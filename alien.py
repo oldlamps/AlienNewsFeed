@@ -451,6 +451,16 @@ def block_and_delete_article(url):
         cursor.execute("DELETE FROM articles WHERE url = ?", (url,))
         conn.commit()
 
+def mark_all_as_seen_in_db():
+    """Sets is_new to 0 for all new articles, leaving is_read untouched."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        # Only update the is_new column
+        cursor.execute("UPDATE articles SET is_new = 0 WHERE is_new = 1")
+        rows_affected = cursor.rowcount
+        conn.commit()
+        return rows_affected
+
 # --- Utility Functions ---
 def get_domain_from_url(url):
     if not url: return ""
@@ -1018,6 +1028,7 @@ class NewsFeedMenu:
             f"{header_color}== Actions ==",
             f"  {key_color}[Enter]{desc_color}   - Open Action Menu for selected article",
             f"  {key_color}[b]{desc_color}       - Bookmark/unbookmark an article",
+            f"  {key_color}[m]{desc_color}       - Mark all new articles as seen",
             f"  {key_color}[c]{desc_color}       - View article comments in-app",
             f"  {key_color}[Del]{desc_color}     - Delete an article permanently",
             f"{header_color}== Views & Modes ==",
@@ -1031,7 +1042,7 @@ class NewsFeedMenu:
         for i, line in enumerate(content):
             sys.stdout.write(f"\x1b[{start_y + 1 + i};{start_x + 2}H{pop_bg}{line.ljust(pop_w - 4)}{Colors.RESET}")
 
-        footer_text = " 👽 Alien News Feed v0.31 - Created by Old Lamps "
+        footer_text = " 👽 Alien News Feed v0.40 - Created by Old Lamps "
         # Correctly calculate the display length, accounting for the double-width emoji
         footer_len = len(footer_text) + 1
 
@@ -1612,6 +1623,18 @@ class NewsFeedMenu:
                 new_status = not selected.get('is_bookmarked')
                 update_article_status(url=selected['url'], is_bookmarked=new_status)
                 selected['is_bookmarked'] = new_status
+        elif key.lower() == 'm':
+            articles_marked = mark_all_as_seen_in_db()
+            if articles_marked > 0:
+                for article in self.master_article_list:
+                    if article['is_new']:
+                        article['is_new'] = False
+                self.status_message = f"{articles_marked} new articles marked as seen."
+                self.force_regenerate_view = True
+            else:
+                self.status_message = "No new articles to mark as seen."
+            self.status_message_timer = 50
+        
         elif key == "c":
             if items_data:
                 self.is_comment_view, self.comment_view_status = True, "Loading comments..."
