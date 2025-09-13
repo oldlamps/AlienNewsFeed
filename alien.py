@@ -1,5 +1,3 @@
-# news_feed_advanced.py
-
 import os
 import sys
 import threading
@@ -117,7 +115,7 @@ THEMES = {
         "new_fg": Colors.YELLOW,
         "delete_fg": Colors.RED
     },
-    # --- A classic, low-contrast light theme for readability ---
+    
     "Solarized Light": {
         "highlight_bg": '\x1b[48;5;153m', # Light desaturated cyan
         "highlight_fg": '\x1b[38;5;66m',  # Dark slate
@@ -128,7 +126,7 @@ THEMES = {
         "new_fg": '\x1b[38;5;136m',       # Solarized yellow
         "delete_fg": '\x1b[38;5;160m'     # Solarized red
     },
-    # --- A clean, minimalist, high-contrast light theme ---
+   
     "Paper White": {
         "highlight_bg": '\x1b[48;5;235m', # Dark grey
         "highlight_fg": '\x1b[38;5;15m',  # White
@@ -153,7 +151,7 @@ THEMES = {
         "new_fg": '\x1b[38;5;215m',
         "delete_fg": '\x1b[38;5;196m'
     },
-    # --- A retro green-on-black terminal theme ---
+    
     "Matrix": {
         "highlight_bg": '\x1b[48;5;118m', # Bright green
         "highlight_fg": '\x1b[38;5;16m',  # Black
@@ -185,7 +183,7 @@ THEMES = {
         "new_fg": '\x1b[38;5;208m',
         "delete_fg": '\x1b[38;5;203m'
     },
-    # --- A stylish synthwave/outrun theme with neon colors ---
+   
     "Retro Sunset": {
         "highlight_bg": '\x1b[48;5;198m', # Hot pink
         "highlight_fg": '\x1b[38;5;17m',  # Deep blue
@@ -249,7 +247,7 @@ def setup_config():
         }
         config['General'] = {
             'Theme': 'Default',
-            'FetchInterval': '300',  # CHANGED
+            'FetchInterval': '300',
             'ShowClock': 'true',
             'BlockedDomains': ''
         }
@@ -270,7 +268,7 @@ def setup_config():
         }
         config['General'] = {
             'Theme': old_settings.get('theme', 'Default'),
-            'FetchInterval': old_settings.get('fetchinterval', '300'), # CHANGED
+            'FetchInterval': old_settings.get('fetchinterval', '300'),
             'ShowClock': old_settings.get('showclock', 'true'),
             'BlockedDomains': old_settings.get('blockeddomains', '')
         }
@@ -292,7 +290,6 @@ def load_profile_settings():
     DB_FILE = CONFIG_DIR / db_filename
     FETCH_INTERVAL_SECONDS = general_settings.getint('FetchInterval', 60)
     SHOW_CLOCK = general_settings.getboolean('ShowClock', True)
-    # --- ADD THIS LINE ---
     VIDEO_PLAYER_PATH = general_settings.get('VideoPlayerPath', 'mpv')
     blocked_str = general_settings.get('BlockedDomains', '')
     BLOCKED_DOMAINS = {domain.strip() for domain in blocked_str.split(',') if domain.strip()}
@@ -311,7 +308,6 @@ def save_general_settings(theme_name, fetch_interval, show_clock, blocked_domain
         'FetchInterval': str(fetch_interval),
         'ShowClock': str(show_clock),
         'BlockedDomains': blocked_domains_str,
-        # --- ADD THIS LINE ---
         'VideoPlayerPath': video_player_path
     }
     with open(CONFIG_FILE, 'w') as f: config.write(f)
@@ -499,7 +495,8 @@ def fetch_articles_threaded():
             for post in data.get("data", {}).get("children", []):
                 post_data = post.get("data", {})
                 domain = get_domain_from_url(post_data.get("url"))
-                if not post_data.get("is_self") and post_data.get("url") and domain not in BLOCKED_DOMAINS:
+                
+                if not post_data.get("is_self") and "crosspost_parent_list" not in post_data and post_data.get("url") and domain not in BLOCKED_DOMAINS:
                     article_data = {k: post_data.get(k) for k in ["title", "url", "subreddit", "created_utc", "permalink", "score", "num_comments"]}
                     add_article_to_db(article_data, deleted_urls)
 
@@ -572,6 +569,50 @@ class NewsFeedMenu:
         self.article_to_delete = None
         self.master_article_list = []
 
+        self.is_subreddit_edit_view = False
+        self.subreddit_list = []
+        self.subreddit_selected_index = 0
+        self.subreddit_input_active = False
+        self.subreddit_input_query = ""
+        self.subreddit_profile_target = None
+
+    def _draw_subreddit_editor(self, items_data):
+        """Draws the interactive popup for adding/removing subreddits."""
+        self._draw(items_data, is_background=True)
+        term_w, term_h = os.get_terminal_size()
+        pop_w, pop_h = 60, max(10, len(self.subreddit_list) + 6)
+        start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
+        title = f"Edit Subreddits for '{self.subreddit_profile_target}'"
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, title)
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+
+        # Draw the list of subreddits
+        for i, name in enumerate(self.subreddit_list):
+            row = start_y + 1 + i
+            if row >= start_y + pop_h - 3: break # Ensure it doesn't overlap footer
+            prefix = "» " if i == self.subreddit_selected_index else "  "
+            display_text = f"{prefix}{name}".ljust(pop_w - 4)
+            if i == self.subreddit_selected_index:
+                sys.stdout.write(f"\x1b[{row};{start_x + 2}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{display_text}{Colors.RESET}")
+            else:
+                sys.stdout.write(f"\x1b[{row};{start_x + 2}H{pop_bg}{pop_fg}{display_text}{Colors.RESET}")
+
+        # Draw the input prompt or help text
+        prompt_y = start_y + pop_h - 3
+        if self.subreddit_input_active:
+            input_text = f"Add Subreddit: {self.subreddit_input_query}_"
+            sys.stdout.write(f"\x1b[{prompt_y};{start_x + 2}H{pop_bg}{Colors.YELLOW}{input_text.ljust(pop_w - 4)}{Colors.RESET}")
+            help_text = "[Enter] Add | [ESC] Cancel"
+        else:
+            sys.stdout.write(f"\x1b[{prompt_y};{start_x + 2}H{pop_bg}{pop_fg}{' ' * (pop_w - 4)}{Colors.RESET}")
+            help_text = "[↑/↓] Nav [a] Add [d] Delete [ESC] Save & Close"
+
+        # Draw the main help footer bar
+        footer_y = start_y + pop_h - 2
+        help_text_padded = f" {help_text} ".center(pop_w - 2, '─')
+        sys.stdout.write(f"\x1b[{footer_y};{start_x}H{pop_bg}{pop_fg}├{help_text_padded}┤{Colors.RESET}")
+        sys.stdout.flush()
+    
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
@@ -621,7 +662,7 @@ class NewsFeedMenu:
         help_footer_y = start_y + pop_h - 2
         sys.stdout.write(f"\x1b[{help_footer_y -1};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
 
-        # --- This dictionary contains the corrected, shorter help text ---
+        
         help_strings = {
             3: "Enter the path to your video player",
             4: "Enter comma-separated domains (e.g., site.com,another.org)",
@@ -652,7 +693,7 @@ class NewsFeedMenu:
                     kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
                     if sys.platform == "win32": kwargs['creationflags'] = 0x00000200 | 0x00000008
                     else: kwargs['start_new_session'] = True
-                    # --- USE THE GLOBAL VARIABLE ---
+                    
                     subprocess.Popen([VIDEO_PLAYER_PATH, url], **kwargs)
                     self.status_message, self.status_message_timer = "Launching video in player...", 50
                 except FileNotFoundError: self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
@@ -666,7 +707,7 @@ class NewsFeedMenu:
                 domain_to_block = get_domain_from_url(url)
                 if domain_to_block and domain_to_block not in BLOCKED_DOMAINS:
                     BLOCKED_DOMAINS.add(domain_to_block)
-                    # --- UPDATE THIS FUNCTION CALL ---
+                    
                     save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
                     self.all_articles = [a for a in self.all_articles if get_domain_from_url(a.get('url')) != domain_to_block]
                     self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
@@ -681,9 +722,9 @@ class NewsFeedMenu:
         if key == "ESC":
             self.blocked_domains_setting = self.blocked_domains_setting.strip(',')
             BLOCKED_DOMAINS = {d.strip() for d in self.blocked_domains_setting.split(',') if d.strip()}
-            # --- UPDATE THIS VARIABLE BEFORE SAVING ---
+            
             VIDEO_PLAYER_PATH = self.video_player_path_setting.strip()
-            # --- UPDATE THIS FUNCTION CALL ---
+            
             save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting,
                                  self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
 
@@ -701,7 +742,6 @@ class NewsFeedMenu:
         if key == "UP":
             self.settings_selected_index = max(0, self.settings_selected_index - 1)
         elif key == "DOWN":
-            # --- UPDATE MAX INDEX ---
             self.settings_selected_index = min(9, self.settings_selected_index + 1)
         else:
             idx = self.settings_selected_index
@@ -714,11 +754,9 @@ class NewsFeedMenu:
                 self.theme = THEMES[self.theme_names[self.current_theme_index]]
             elif idx == 2:  # Show Clock
                 if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
-            # --- ADD THIS NEW BLOCK ---
             elif idx == 3:  # Video Player Path
                 if key == "BACKSPACE": self.video_player_path_setting = self.video_player_path_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.video_player_path_setting += key
-            # --- UPDATE INDICES FOR THE FOLLOWING BLOCKS ---
             elif idx == 4:  # Blocked Domains
                 if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
@@ -729,7 +767,6 @@ class NewsFeedMenu:
                 if key == "BACKSPACE": self.mute_keywords_setting = self.mute_keywords_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.mute_keywords_setting += key
             elif key == "ENTER": # Handle action items at the bottom
-                # --- UPDATE INDICES ---
                 if idx == 7:  # Export Bookmarks
                     export_bookmarks_to_html()
                     self.status_message, self.status_message_timer, self.is_settings_view = "Bookmarks exported to backups folder!", 50, False
@@ -746,7 +783,7 @@ class NewsFeedMenu:
 
     def _get_action_menu_options(self):
         options = {
-            "Open Article in Browser": "open_article",
+            "Open Link in Browser": "open_article",
             "Open Comments in Browser": "open_comments",
             "Summarize with Perplexity": "summarize",
             "---SEPARATOR_1---": "separator",
@@ -755,13 +792,12 @@ class NewsFeedMenu:
             "---SEPARATOR_2---": "separator",
             "Exclude this domain": "exclude_domain",
             "---SEPARATOR_3---": "separator",
-            "Delete Article": "delete_article"
+            "Delete Link": "delete_article"
         }
         if self.action_menu_article:
             domain = get_domain_from_url(self.action_menu_article.get('url', ''))
             if domain in ['youtube.com', 'youtu.be']:
                 items = list(options.items())
-                # --- This line is updated for the new text and action name ---
                 items.insert(1, ("Launch in Video Player", "watch_video"))
                 options = dict(items)
         return options
@@ -812,8 +848,6 @@ class NewsFeedMenu:
 
         def replace_link(match):
             link_text, url = match.group(1), match.group(2)
-            # FIX: Use specific "off" codes and reset only the foreground color.
-            # This no longer uses the aggressive RESET and will not affect the background.
             return (
                 f"{Colors.UNDERLINE}{Colors.BLUE}{link_text}{Colors.UNDERLINE_OFF}"
                 f"{self.theme['popup_fg']}"
@@ -832,7 +866,6 @@ class NewsFeedMenu:
 
         return text
 
-    # --- NEW: Method to extract links from a comment body ---
     def _extract_links_from_comment(self, comment_body):
         """Parses a comment body and returns a list of found links."""
         # Regex for Markdown links: [text](url)
@@ -998,14 +1031,12 @@ class NewsFeedMenu:
         for i, line in enumerate(content):
             sys.stdout.write(f"\x1b[{start_y + 1 + i};{start_x + 2}H{pop_bg}{line.ljust(pop_w - 4)}{Colors.RESET}")
 
-        # --- Create and draw the custom footer ---
         footer_text = " 👽 Alien News Feed v0.31 - Created by Old Lamps "
         # Correctly calculate the display length, accounting for the double-width emoji
         footer_len = len(footer_text) + 1
 
         content_width = pop_w - 2
 
-        # The typo was in this calculation block in the previous version
         remaining_width = content_width - footer_len
         left_dashes = remaining_width // 2
         right_dashes = remaining_width - left_dashes
@@ -1069,7 +1100,6 @@ class NewsFeedMenu:
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        # --- Make sure popup height is increased to 17 ---
         pop_w, pop_h = 70, 17
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Settings")
@@ -1102,7 +1132,6 @@ class NewsFeedMenu:
             "Export Full Backup",
             "Import from Backup"
         ]
-        # --- Divider position must be updated to 7 ---
         divider_pos = 7
         for i, option in enumerate(options):
             row = start_y + 2 + i
@@ -1120,7 +1149,6 @@ class NewsFeedMenu:
         help_footer_y = start_y + pop_h - 2
         sys.stdout.write(f"\x1b[{help_footer_y -1};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
 
-        # --- The help string indices must also be updated ---
         help_strings = {
             3: "Enter the full path to your video player executable (e.g., /usr/bin/mpv)",
             4: "Enter comma-separated domains (e.g., site.com,another.org)",
@@ -1177,24 +1205,18 @@ class NewsFeedMenu:
         sys.stdout.write(f"\x1b[{start_y+pop_h-2};{start_x+1}H{pop_bg}{pop_fg}{help_text}{Colors.RESET}")
         sys.stdout.flush()
 
-    # --- NEW: Method to draw the link extraction popup ---
     def _draw_link_popup(self, items_data):
-        # 1. Draw the background (the comment view)
         self._draw_comments(items_data)
 
-        # 2. Define popup dimensions
         term_w, term_h = os.get_terminal_size()
         pop_w, pop_h = 70, min(15, len(self.extracted_links) + 4)
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
 
-        # 3. Draw the border and title
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Links in Comment")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
 
-        # 4. List the links
         for i, link in enumerate(self.extracted_links):
             row = start_y + 1 + i # Start one line lower for content
-            # Truncate text and url to fit the popup width
             display_text = f" {link['text'][:30]:<30} → {link['url'][:30]}"
             display_text = display_text.ljust(pop_w - 4)
 
@@ -1203,11 +1225,9 @@ class NewsFeedMenu:
             else:
                 sys.stdout.write(f"\x1b[{row};{start_x + 2}H{pop_bg}{pop_fg}{display_text}{Colors.RESET}")
 
-        # 5. Add a help footer
         help_text = "[↑/↓] Select | [↵] Open | [ESC] Back".center(pop_w - 2)
         sys.stdout.write(f"\x1b[{start_y + pop_h - 2};{start_x + 1}H{pop_bg}{pop_fg}{help_text}{Colors.RESET}")
         sys.stdout.flush()
-
 
     def _draw(self, items_data, is_background=False):
         if not is_background: sys.stdout.write(Colors.RESET)
@@ -1257,11 +1277,8 @@ class NewsFeedMenu:
                 display = f"{title_color}{format_time_ago(item.get('created_utc')):<8} {sub} {src}{Colors.RESET} {highlight_icon}{bookmark}{video_icon}{item.get('title')}{Colors.RESET}"
                 line = f"> {display}" if i == self.selected_index else f"  {display}"
 
-                # FIX: Replace the simple ljust with our robust padding logic
                 plain_text_len = len(re.sub(r'\x1b\[[0-9;]*m', '', line))
-                # Truncate if too long, pad with spaces if too short
                 if plain_text_len > safe_width:
-                    # This is a complex problem; for now, we just prevent wrapping
                     line_to_draw = line
                 else:
                     padding = ' ' * (safe_width - plain_text_len)
@@ -1349,6 +1366,7 @@ class NewsFeedMenu:
                 elif self.is_help_view: self._draw_help_menu(items_data)
                 elif self.is_import_view: self._draw_import_instructions(items_data)
                 elif self.is_profile_view: self._draw_profile_manager(items_data)
+                elif self.is_subreddit_edit_view: self._draw_subreddit_editor(items_data)
                 else: self._draw(items_data)
                 self.needs_redraw = False
 
@@ -1364,25 +1382,18 @@ class NewsFeedMenu:
             elif self.is_help_view: self.handle_help_view_input(key)
             elif self.is_import_view: self.handle_import_view_input(key)
             elif self.is_profile_view: self.handle_profile_input(key)
+            elif self.is_subreddit_edit_view: self.handle_subreddit_edit_input(key)
             elif self.is_search_view: self.handle_search_view_input(key, items_data)
             else: self.handle_main_view_input(key, items_data)
 
     def handle_delete_confirm_input(self, key, items_data):
-        # If 'y' is pressed, perform the deletion.
         if key.lower() == 'y':
             if self.article_to_delete:
-                # Delete from the database
                 block_and_delete_article(self.article_to_delete['url'])
-
-                # Delete from the in-memory master list to ensure the UI updates
                 self.master_article_list = [a for a in self.master_article_list if a['url'] != self.article_to_delete['url']]
-
-                # Trigger a full view regeneration and show a confirmation message
                 self.force_regenerate_view = True
                 self.status_message, self.status_message_timer = "Article deleted.", 50
 
-        # After any key press ('y' or any other key to cancel),
-        # reset the state to exit the confirmation view.
         self.is_delete_confirm_view, self.article_to_delete = False, None
         self.needs_redraw = True
 
@@ -1421,15 +1432,12 @@ class NewsFeedMenu:
             if action == "delete_article":
                 self.article_to_delete, self.is_delete_confirm_view = self.action_menu_article, True
             elif action == "open_article": threading.Thread(target=webbrowser.open, args=(url,)).start()
-            # --- This block is updated to match the new action and messages ---
             elif action == "watch_video":
                 try:
                     kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
                     if sys.platform == "win32": kwargs['creationflags'] = 0x00000200 | 0x00000008
                     else: kwargs['start_new_session'] = True
-                    # It correctly uses the global variable for the path
                     subprocess.Popen([VIDEO_PLAYER_PATH, url], **kwargs)
-                    # The feedback message is now generic
                     self.status_message, self.status_message_timer = "Launching in Video Player...", 50
                 except FileNotFoundError: self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
             elif action == "open_comments": threading.Thread(target=webbrowser.open, args=(f"https://www.reddit.com{self.action_menu_article['permalink']}",)).start()
@@ -1490,7 +1498,6 @@ class NewsFeedMenu:
             elif idx == 3:  # Video Player Path
                 if key == "BACKSPACE": self.video_player_path_setting = self.video_player_path_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.video_player_path_setting += key
-            # --- The following indices are now correct ---
             elif idx == 4:  # Blocked Domains
                 if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
@@ -1515,7 +1522,6 @@ class NewsFeedMenu:
                     self.is_import_view = True
         self.needs_redraw = True
 
-    # --- NEW: Handler for the link extraction popup ---
     def handle_link_input(self, key):
         if key == "ESC":
             self.is_link_view = False
@@ -1549,7 +1555,6 @@ class NewsFeedMenu:
                 if selected_comment.children:
                     selected_comment.is_collapsed = not selected_comment.is_collapsed
                     self._prepare_comment_lines() # Re-prepare lines after collapsing/expanding
-            # --- NEW: Trigger for link extraction ---
             elif key == 'l':
                 if self.visible_comments:
                     selected_comment = self.visible_comments[self.comment_selected_index]
@@ -1572,7 +1577,6 @@ class NewsFeedMenu:
         if self.search_input_active:
             if key == "ENTER":
                 self.search_input_active = False
-                # No need to force regen here, as the view won't change
             elif key == "ESC":
                 self.is_search_view, self.search_query, self.search_input_active = False, "", False
                 self.force_regenerate_view = True # Clear search
@@ -1652,7 +1656,6 @@ class NewsFeedMenu:
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
         for i, name in enumerate(self.profiles):
             row = start_y + 1 + i
-            # Adjusted to leave space for a 2-line footer (prompt + help bar)
             if row >= start_y + pop_h - 3: break
             prefix = "» " if i == self.profile_selected_index else "  "
             suffix = " (Active)" if name == self.active_profile else ""
@@ -1686,7 +1689,6 @@ class NewsFeedMenu:
             sys.stdout.write(f"\x1b[{prompt_y};{start_x + 2}H{pop_bg}{Colors.GREEN}{status_text}{Colors.RESET}")
             help_text = "[↵]Switch [n]New [r]Rename [e]Edit [d]Delete [ESC]Back"
 
-        # --- FIX: Consolidated Help Bar Drawing ---
         footer_y = start_y + pop_h - 2
         help_text_padded = f" {help_text} "
 
@@ -1725,9 +1727,17 @@ class NewsFeedMenu:
             selected_profile = self.profiles[self.profile_selected_index]
             if key.lower() == 'y':
                 if delete_profile(selected_profile):
-                    self.profile_status_message = f"Profile '{selected_profile}' deleted."
-                    self.profile_selected_index = max(0, self.profile_selected_index - 1)
-                    self.profiles = get_all_profiles()
+                    # Check if the deleted profile was the one we are currently using
+                    if selected_profile == self.active_profile:
+                        set_active_profile('Main')
+                        self.profile_status_message = "Active profile deleted. Switching to 'Main' and restarting..."
+                        NEEDS_RESTART = True
+                        self.is_running = False # Exit main loop to trigger restart
+                    else:
+                        # If it wasn't the active profile, just update the list as normal
+                        self.profile_status_message = f"Profile '{selected_profile}' deleted."
+                        self.profile_selected_index = max(0, self.profile_selected_index - 1)
+                        self.profiles = get_all_profiles()
                 else: self.profile_status_message = "Error: Cannot delete 'Main' profile."
             else: self.profile_status_message = "Deletion cancelled."
             self.profile_action = None
@@ -1746,16 +1756,67 @@ class NewsFeedMenu:
             self.profile_action, self.profile_input_active = 'rename', True
             self.profile_input_query = self.profiles[self.profile_selected_index]
         elif key.lower() == 'e':
-            self.profile_action, self.profile_input_active = 'edit', True
-            config = configparser.ConfigParser(); config.read(CONFIG_FILE)
-            section = f"Profile:{self.profiles[self.profile_selected_index]}"
-            self.profile_input_query = config.get(section, 'subreddits', fallback='')
+            # Launch the new subreddit editor UI
+            self.is_profile_view = False
+            self.is_subreddit_edit_view = True
+            self.subreddit_profile_target = self.profiles[self.profile_selected_index]
+
+            # Load current subreddits into the editor list
+            config = configparser.ConfigParser()
+            config.read(CONFIG_FILE)
+            section = f"Profile:{self.subreddit_profile_target}"
+            current_subs = config.get(section, 'subreddits', fallback='')
+            self.subreddit_list = [s for s in current_subs.split('+') if s] # Filter out empty strings
+            self.subreddit_selected_index = 0
         elif key.lower() == 'd':
             if self.profiles[self.profile_selected_index] != 'Main': self.profile_action = 'delete'
             else: self.profile_status_message = "Cannot delete the 'Main' profile."
         self.needs_redraw = True
 
-# --- Command-line and Utility Functions ---
+    def handle_subreddit_edit_input(self, key):
+        """Handles key presses for the subreddit editor."""
+        global NEEDS_RESTART
+        # --- Handle text input mode first ---
+        if self.subreddit_input_active:
+            if key == "ENTER":
+                new_sub = self.subreddit_input_query.strip()
+                if new_sub and new_sub not in self.subreddit_list:
+                    self.subreddit_list.append(new_sub)
+                self.subreddit_input_active = False
+                self.subreddit_input_query = ""
+            elif key == "ESC":
+                self.subreddit_input_active = False
+                self.subreddit_input_query = ""
+            elif key == "BACKSPACE":
+                self.subreddit_input_query = self.subreddit_input_query[:-1]
+            elif len(key) == 1 and key.isprintable():
+                self.subreddit_input_query += key
+            self.needs_redraw = True
+            return
+
+        # --- Handle navigation and action mode ---
+        if key == "UP":
+            self.subreddit_selected_index = max(0, self.subreddit_selected_index - 1)
+        elif key == "DOWN":
+            self.subreddit_selected_index = min(len(self.subreddit_list) - 1, self.subreddit_selected_index + 1)
+        elif key.lower() == 'a':
+            self.subreddit_input_active = True
+        elif key.lower() == 'd':
+            if self.subreddit_list:
+                del self.subreddit_list[self.subreddit_selected_index]
+                if self.subreddit_selected_index >= len(self.subreddit_list):
+                    self.subreddit_selected_index = max(0, len(self.subreddit_list) - 1)
+        elif key == "ESC":
+            # Save the changes and exit
+            updated_subreddits = '+'.join(self.subreddit_list)
+            update_profile_subreddits(self.subreddit_profile_target, updated_subreddits)
+            self.profile_status_message = f"Subreddits updated for '{self.subreddit_profile_target}'. Restarting..."
+            self.is_subreddit_edit_view = False
+            self.is_profile_view = True # Go back to the profile manager
+            NEEDS_RESTART = True
+
+        self.needs_redraw = True
+
 def export_bookmarks_to_html():
     backups_dir = CONFIG_DIR / "backups"
     backups_dir.mkdir(exist_ok=True)
@@ -1818,7 +1879,6 @@ def import_database(path_str, profile_name):
         print("Import cancelled.")
         sys.exit(0)
 
-# --- Main Execution ---
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="A terminal-based news feed reader.")
     parser.add_argument('--export', action='store_true', help="Export a full backup of the database and exit.")
