@@ -3033,6 +3033,11 @@ def import_database(path_str, profile_name):
 if __name__ == '__main__':
     import multiprocessing
     multiprocessing.freeze_support()
+    try:
+        if hasattr(multiprocessing, 'set_start_method') and 'fork' in multiprocessing.get_all_start_methods():
+            multiprocessing.set_start_method('fork', force=True)
+    except (RuntimeError, ValueError):
+        pass
     parser = argparse.ArgumentParser(description="A terminal-based news feed reader.")
     parser.add_argument('--export', action='store_true', help="Export a full backup of the database and exit.")
     parser.add_argument('--import', dest='import_path', metavar='PATH', help="Import a database from the specified path and start the app.")

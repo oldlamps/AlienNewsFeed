@@ -24,6 +24,7 @@ backups/
 
 # Logs and scratch files
 *.log
+*error_log*.txt
 scratch/
 debug.log
 

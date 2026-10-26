@@ -1,5 +1,6 @@
 import trafilatura
 from trafilatura import settings
+import multiprocessing
 from multiprocessing import Process, Queue
 from bs4 import BeautifulSoup
 import re
@@ -102,25 +103,78 @@ def _scrape_worker(url, result_queue):
         result_queue.put((None, f"Error within scraper process: {e}"))
 
 
+def scrape_direct(url):
+    """
+    Direct scraping in the current thread with timeout configuration.
+    Used as primary or fallback if process spawning is blocked in frozen binaries.
+    """
+    try:
+        config = settings.use_config()
+        section = "DOWNLOAD"
+        if not config.has_section(section):
+            config.add_section(section)
+        current_headers = HEADERS.copy()
+        current_headers['User-Agent'] = random.choice(USER_AGENTS)
+        config.set(section, "HEADERS", str(current_headers))
+        config.set(section, "TIMEOUT", "15")
+
+        downloaded = trafilatura.fetch_url(url, config=config)
+        if downloaded is None:
+            return None, "Error: Failed to fetch URL. Site might be down or blocking requests."
+
+        content = trafilatura.extract(
+            downloaded,
+            include_comments=False,
+            output_format='txt',
+            include_tables=False,
+            favor_recall=True,
+            config=config
+        )
+        if content and len(content) > 150:
+            lines = content.split('\n')
+            title = lines[0]
+            body = '\n'.join(lines[1:])
+            return title, body
+        else:
+            title, body = _fallback_scraper(downloaded)
+            if title and body:
+                return title, body
+            else:
+                return None, "Error: Primary and fallback scrapers could not extract meaningful content."
+    except Exception as e:
+        return None, f"Error within scraper: {e}"
+
+
 def scrape_in_subprocess(url, timeout=20):
     """
-    Manages the scraping subprocess, ensuring it doesn't hang or crash the main app.
-    This is the new function that alien.py will call.
+    Manages the scraping subprocess with fallback to direct execution.
+    Uses 'fork' context on Linux/Unix to avoid forkserver connection issues in frozen binaries.
     """
-    result_queue = Queue()
-    p = Process(target=_scrape_worker, args=(url, result_queue))
-    p.start()
-    p.join(timeout) # Wait for the process to finish, with a timeout
+    try:
+        # Prefer fork context to avoid forkserver/spawn issues in PyInstaller
+        if hasattr(multiprocessing, 'get_context') and 'fork' in multiprocessing.get_all_start_methods():
+            ctx = multiprocessing.get_context('fork')
+        else:
+            ctx = multiprocessing
 
-    if p.is_alive():
-        p.terminate()
-        p.join()
-        return None, "Error: Scraping process timed out and was terminated."
+        result_queue = ctx.Queue()
+        p = ctx.Process(target=_scrape_worker, args=(url, result_queue))
+        p.start()
+        p.join(timeout)
 
-    if p.exitcode is not None and p.exitcode != 0:
-        return None, f"Error: Scraping process crashed unexpectedly (exit code: {p.exitcode})."
+        if p.is_alive():
+            p.terminate()
+            p.join()
+            return None, "Error: Scraping process timed out and was terminated."
 
-    if result_queue.empty():
-        return None, "Error: Scraper finished but failed to return a result."
+        if p.exitcode is not None and p.exitcode != 0:
+            # Subprocess failed; fallback to direct scrape
+            return scrape_direct(url)
 
-    return result_queue.get()
+        if result_queue.empty():
+            return scrape_direct(url)
+
+        return result_queue.get()
+    except Exception:
+        # Fallback to direct in-thread execution if subprocess creation fails
+        return scrape_direct(url)
