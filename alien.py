@@ -13,9 +13,20 @@ import shutil
 import argparse
 import re
 import html
+import textwrap
+import scraper
+import traceback
+import ollama_client
 from pathlib import Path
 from urllib.parse import urlparse, quote
-import pid # Added for single-instance locking
+import pid
+from user_agents import (
+    reddit_get,
+    build_browser_headers,
+    fetch_reddit_posts,
+    fetch_reddit_domain_posts,
+    fetch_reddit_comments
+)
 
 # --- Platform-specific imports for direct keyboard input ---
 try:
@@ -55,7 +66,6 @@ try:
             if extra == '[3~': return "DELETE"
             if extra == '[5~': return "PGUP"
             if extra == '[6~': return "PGDOWN"
-            # ADD THESE FOUR LINES for different terminal emulators
             if extra == '[H' or extra == '[1~': return "HOME"
             if extra == '[F' or extra == '[4~': return "END"
 
@@ -81,7 +91,6 @@ except ImportError:
                 if ch == b'\x08': return "BACKSPACE"
                 if ch == b'\xe0':
                     ch2 = msvcrt.getch()
-                    # ADD HOME and END to this dictionary
                     return {
                         b'H': "UP", b'P': "DOWN", b'K': "LEFT",
                         b'M': "RIGHT", b'S': "DELETE", b'I': "PGUP",
@@ -417,10 +426,18 @@ def add_article_to_db(article, deleted_urls):
     domain = get_domain_from_url(url)
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute('INSERT OR IGNORE INTO articles (url, title, subreddit, source_domain, permalink, created_utc, score, num_comments, is_new) VALUES (?,?,?,?,?,?,?,?,?)', (
+        # Use UPSERT to update score and num_comments if the article already exists
+        cursor.execute('''
+            INSERT INTO articles (url, title, subreddit, source_domain, permalink, created_utc, score, num_comments, is_new) 
+            VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(url) DO UPDATE SET 
+                score = excluded.score,
+                num_comments = excluded.num_comments
+        ''', (
             url, article.get('title'), article.get('subreddit'), domain,
             article.get('permalink'), article.get('created_utc'), article.get('score', 0),
             article.get('num_comments', 0), 1))
+        
         if cursor.rowcount > 0:
             with data_lock: HAS_NEW_ARTICLES = True
         conn.commit()
@@ -493,26 +510,17 @@ def fetch_articles_threaded():
                 cursor.execute("SELECT url FROM deleted_articles")
                 deleted_urls = {row[0] for row in cursor.fetchall()}
 
-            url = f"https://www.reddit.com/r/{SUBREDDITS_STRING}/new.json?limit=50"
-            headers = {"User-Agent": "live_news_feed_script/2.6"}
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-
-            # If the above lines succeed, the connection is OK
+            articles = fetch_reddit_posts(SUBREDDITS_STRING)
             CONNECTION_OK = True
 
-            data = response.json()
-            for post in data.get("data", {}).get("children", []):
-                post_data = post.get("data", {})
-                domain = get_domain_from_url(post_data.get("url"))
-                
-                if not post_data.get("is_self") and "crosspost_parent_list" not in post_data and post_data.get("url") and domain not in BLOCKED_DOMAINS:
-                    article_data = {k: post_data.get(k) for k in ["title", "url", "subreddit", "created_utc", "permalink", "score", "num_comments"]}
+            for article_data in articles:
+                domain = get_domain_from_url(article_data.get("url"))
+                if domain not in BLOCKED_DOMAINS:
                     add_article_to_db(article_data, deleted_urls)
 
             last_checked_time = time.strftime("%I:%M:%S %p")
             ARTICLES_UPDATED.set()
-        except requests.exceptions.RequestException:
+        except Exception:
             # If any network error occurs, set the status to False
             CONNECTION_OK = False
             # Trigger a redraw to show the red indicator immediately
@@ -535,11 +543,34 @@ class NewsFeedMenu:
         self.is_search_view, self.search_query = False, ""
         self.search_input_active = False
 
+        self.is_intelligence_view = False
+        self.intelligence_data = {
+            "article_title": "",
+            "article_text": "",
+            "ai_summary": "",
+            "status_message": "Initializing...",
+            "current_article_url": None,
+            "wrapped_article_lines": [],
+            "wrapped_ai_lines": [] 
+        }
+
+        self.intel_active_pane = 'article'  # Can be 'article' or 'ai'
+        self.intel_article_scroll_top = 0
+        self.intel_ai_scroll_top = 0
         self.is_link_view = False
         self.extracted_links = []
         self.link_selected_index = 0
+        
+        # --- AI Intelligence Tabs & Chat ---
+        self.intel_tabs = ["Summary", "Deep Dive", "Chat"]
+        self.intel_active_tab = 0  # 0: Summary, 1: Deep Dive, 2: Chat
+        self.intel_chat_history = []  # List of dicts: {"role": "user"|"ai", "text": "..."}
+        self.intel_chat_input = ""
+        self.intel_chat_scroll_top = 0
+        self.intel_chat_auto_scroll = True
 
         self.page_jump = PAGE_JUMP
+        self.scroll_offset = 4
         self.selected_index, self.scroll_top = 0, 0
 
         self.comment_tree, self.visible_comments = [], []
@@ -563,7 +594,6 @@ class NewsFeedMenu:
         self.theme = THEMES[self.theme_names[self.current_theme_index]]
         self.fetch_interval_setting = FETCH_INTERVAL_SECONDS
         self.show_clock_setting = SHOW_CLOCK
-        # --- ADD THIS LINE ---
         self.video_player_path_setting = VIDEO_PLAYER_PATH
         self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
         self.highlight_keywords_setting = ','.join(sorted(list(HIGHLIGHT_KEYWORDS)))
@@ -585,6 +615,29 @@ class NewsFeedMenu:
         self.subreddit_input_active = False
         self.subreddit_input_query = ""
         self.subreddit_profile_target = None
+
+        self.is_trend_view = False
+        self.trend_time_range_index = 1  # Default to Day (0: Hour, 1: Day, 2: Week)
+        self.trend_data = {
+            "summary": "",
+            "wrapped_lines": [],
+            "status_message": "Ready to analyze.",
+            "scroll_top": 0
+        }
+
+        self.is_domain_view = False
+        self.domain_articles = []
+        self.domain_view_title = ""
+        self.domain_view_selected_index = 0
+        self.domain_view_scroll_top = 0
+
+        self.is_comment_analysis_view = False
+        self.comment_analysis_data = {
+            "summary": "",
+            "wrapped_lines": [],
+            "status_message": "Initializing...",
+            "scroll_top": 0
+        }
 
     def _draw_subreddit_editor(self, items_data):
         """Draws the interactive popup for adding/removing subreddits."""
@@ -622,7 +675,853 @@ class NewsFeedMenu:
         help_text_padded = f" {help_text} ".center(pop_w - 2, '─')
         sys.stdout.write(f"\x1b[{footer_y};{start_x}H{pop_bg}{pop_fg}├{help_text_padded}┤{Colors.RESET}")
         sys.stdout.flush()
-    
+
+    def _draw_intelligence_view(self, items_data):
+        """Draws the enhanced analysis view with scrolling and active pane indicators."""
+        if self.is_domain_view:
+            self._draw_domain_view(items_data, is_background=True)
+        else:
+            self._draw(items_data, is_background=True)
+
+        term_w, term_h = os.get_terminal_size()
+        
+        start_x, start_y = 1, 1 
+        pop_w, pop_h = term_w, term_h
+        
+        title = f" Intelligence View: {self.intelligence_data['article_title'][:term_w - 25]} "
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, title)
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+
+        # --- Vertical Split Calculations (66% / 33%) ---
+        available_w = pop_w - 2
+        article_w = int(available_w * 0.66)
+        ai_w = available_w - article_w - 1 # -1 for separator
+        
+        content_pane_h = pop_h - 4
+        ai_pane_h = pop_h - 4
+        
+        article_start_x = start_x + 1
+        separator_x = start_x + 1 + article_w
+        ai_start_x = separator_x + 1
+        content_start_y = start_y + 1
+        
+        # Draw Vertical Separator
+        for i in range(pop_h - 2):
+            sys.stdout.write(f"\x1b[{start_y + 1 + i};{separator_x}H{pop_bg}{pop_fg}│{Colors.RESET}")
+        
+        # Headers
+        article_pane_color = self.theme['highlight_bg'] if self.intel_active_pane == 'article' else pop_fg
+        ai_pane_color = self.theme['highlight_bg'] if self.intel_active_pane == 'ai' else pop_fg
+        
+        # Article Header
+        sys.stdout.write(f"\x1b[{start_y + 1};{article_start_x}H{pop_bg}{article_pane_color} Article Content {'─' * (article_w - 17)}{Colors.RESET}")
+        
+        # AI Header & Tabs
+        # Draw base line first
+        sys.stdout.write(f"\x1b[{start_y + 1};{ai_start_x}H{pop_bg}{ai_pane_color}{'─' * ai_w}{Colors.RESET}")
+        
+        # Draw Tabs
+        current_tab_x = ai_start_x + 1
+        for i, tab in enumerate(self.intel_tabs):
+            # Styling: [ TabName ]
+            # Active tab gets highlight color if AI pane is active, or just bright text if inactive
+            is_active_tab = (i == self.intel_active_tab)
+            
+            if is_active_tab:
+                tab_text = f" {tab} "
+                if self.intel_active_pane == 'ai':
+                    # Active Pane + Active Tab = Highlight
+                    sys.stdout.write(f"\x1b[{start_y + 1};{current_tab_x}H{self.theme['highlight_bg']}{self.theme['highlight_fg']}{tab_text}{Colors.RESET}")
+                else:
+                    # Inactive Pane + Active Tab = Brighter Text
+                    sys.stdout.write(f"\x1b[{start_y + 1};{current_tab_x}H{pop_bg}{Colors.BOLD}{Colors.CYAN}{tab_text}{Colors.RESET}")
+            else:
+                # Inactive Tab
+                tab_text = f" {tab} "
+                sys.stdout.write(f"\x1b[{start_y + 1};{current_tab_x}H{pop_bg}{pop_fg}{tab_text}{Colors.RESET}")
+            
+            current_tab_x += len(tab_text) + 1
+
+        # --- DRAW SCROLLABLE ARTICLE PANE (LEFT) ---
+        article_lines = self.intelligence_data.get('wrapped_article_lines', [])
+        if article_lines:
+            for i in range(content_pane_h - 1): # Reserve top line for header
+                line_idx = self.intel_article_scroll_top + i
+                if line_idx < len(article_lines):
+                    line_text = article_lines[line_idx]
+                    line_text = line_text[:article_w - 2]
+                    sys.stdout.write(f"\x1b[{content_start_y + 1 + i};{article_start_x + 1}H{pop_bg}{Colors.LIGHT_GREY}{line_text.ljust(article_w - 2)}{Colors.RESET}")
+        
+            max_scroll = max(0, len(article_lines) - (content_pane_h - 1))
+            scroll_percent = self.intel_article_scroll_top / max_scroll if max_scroll > 0 else 1.0
+            scrollbar_pos = int(scroll_percent * (content_pane_h - 2))
+            for i in range(content_pane_h - 1):
+                char = '█' if i == scrollbar_pos else '░'
+                sys.stdout.write(f"\x1b[{content_start_y + 1 + i};{article_start_x + article_w - 1}H{pop_bg}{self.theme['highlight_bg']}{char}{Colors.RESET}")
+
+        # --- DRAW CONTENT BASED ON ACTIVE TAB (RIGHT) ---
+        tab_name = self.intel_tabs[self.intel_active_tab]
+        
+        if tab_name == "Chat":
+            # --- CHAT UI ---
+            chat_h = ai_pane_h - 2 # Reserve space for input box
+            
+            # 1. Process all chat history into wrapped lines
+            chat_lines = []
+            max_msg_w = ai_w - 2
+            
+            for msg in self.intel_chat_history:
+                sender = "AI" if msg['role'] == 'ai' else "You"
+                color = Colors.CYAN if msg['role'] == 'ai' else Colors.YELLOW
+                prefix = f"{sender}: "
+                
+                # Wrap message content
+                # We store tuples of (text_content, color_code) or similar to handle coloring line by line
+                # But to keep it simple with existing draw logic, let's pre-format the strings with colors?
+                # Actually, standard method is better: just store raw lines and apply color at draw time if possible.
+                # BUT, a single message spans multiple lines.
+                # Let's store objects or tuples: (line_text, color_of_line)
+                
+                wrapper = textwrap.TextWrapper(width=max_msg_w, initial_indent=prefix, subsequent_indent="  ")
+                wrapped_msg = wrapper.wrap(msg['text'])
+                
+                for i, line in enumerate(wrapped_msg):
+                     # apply color only to the prefix part if it's the first line?
+                     # No, the drawing logic below applies color to the whole block usually.
+                     # Let's simplify: Just store the string, and maybe a metadata flag for color?
+                     # Or just pre-color the prefix in the string? No, length calcs get messed up.
+                     is_first = (i == 0)
+                     chat_lines.append( {"text": line, "role": msg['role'], "is_first": is_first} )
+            
+            # 2. Handle Auto-Scrolling
+            total_lines = len(chat_lines)
+            if self.intel_chat_auto_scroll:
+                self.intel_chat_scroll_top = max(0, total_lines - chat_h)
+            
+            # 3. Render Visible Lines
+            current_y = content_start_y + 1
+            for i in range(chat_h):
+                line_idx = self.intel_chat_scroll_top + i
+                if line_idx < total_lines:
+                    line_data = chat_lines[line_idx]
+                    text = line_data['text']
+                    role = line_data['role']
+                    is_first = line_data['is_first']
+                    
+                    color = Colors.CYAN if role == 'ai' else Colors.YELLOW
+                    
+                    # If it's the first line of a message, highlight the sender
+                    # We need to reconstruct the visual string
+                    # prefix len is dynamic based on role
+                    prefix_str = "AI: " if role == 'ai' else "You: "
+                    
+                    display_text = ""
+                    if is_first:
+                         # e.g. "AI: Hello there"
+                         # We want AI: to be colored, rest light grey
+                         # Slice the text
+                         content_part = text[len(prefix_str):]
+                         sys.stdout.write(f"\x1b[{current_y};{ai_start_x + 1}H{pop_bg}{color}{prefix_str}{Colors.LIGHT_GREY}{content_part.ljust(max_msg_w - len(prefix_str))}{Colors.RESET}")
+                    else:
+                         sys.stdout.write(f"\x1b[{current_y};{ai_start_x + 1}H{pop_bg}{Colors.LIGHT_GREY}{text.ljust(max_msg_w)}{Colors.RESET}")
+                    
+                    current_y += 1
+
+            # 4. Draw Scrollbar for Chat
+            if total_lines > chat_h:
+                max_scroll = max(0, total_lines - chat_h)
+                scroll_percent = self.intel_chat_scroll_top / max_scroll if max_scroll > 0 else 1.0
+                scrollbar_pos = int(scroll_percent * (chat_h - 1))
+                for i in range(chat_h):
+                    char = '█' if i == scrollbar_pos else '░'
+                    sys.stdout.write(f"\x1b[{content_start_y + 1 + i};{ai_start_x + ai_w - 1}H{pop_bg}{self.theme['highlight_bg']}{char}{Colors.RESET}")
+
+
+            # Draw Input Box
+            input_y = start_y + pop_h - 3
+            sys.stdout.write(f"\x1b[{input_y};{ai_start_x}H{pop_bg}{pop_fg} {'─' * (ai_w - 2)} {Colors.RESET}") # Separator
+            
+            prompt_marker = "> "
+            input_display_w = ai_w - 4
+            visible_input = self.intel_chat_input[-(input_display_w):]
+            
+            # Highlight input if active
+            input_color = Colors.YELLOW if self.intel_active_pane == 'ai' else pop_fg
+            
+            sys.stdout.write(f"\x1b[{input_y + 1};{ai_start_x + 1}H{pop_bg}{input_color}{prompt_marker}{visible_input.ljust(input_display_w)}_ {Colors.RESET}")
+
+        else: 
+            # --- SUMMARY / DEEP DIVE (Text View) ---
+            # Reuse the existing scrolling text logic but use 'wrapped_ai_lines' 
+            # We might want to separate 'Deep Dive' content later, but for now share the buffer
+            
+            ai_lines = self.intelligence_data.get('wrapped_ai_lines', [])
+            if not ai_lines and tab_name == "Summary":
+                 sys.stdout.write(f"\x1b[{content_start_y + 2};{ai_start_x + 2}H{pop_bg}{Colors.ITALIC}Press 's' to generate summary...{Colors.RESET}")
+            
+            if ai_lines:
+                for i in range(ai_pane_h - 1): 
+                    line_idx = self.intel_ai_scroll_top + i
+                    if line_idx < len(ai_lines):
+                        line_text = ai_lines[line_idx]
+                        line_text = line_text[:ai_w - 2]
+                        sys.stdout.write(f"\x1b[{content_start_y + 1 + i};{ai_start_x + 1}H{pop_bg}{Colors.CYAN}{line_text.ljust(ai_w - 2)}{Colors.RESET}")
+
+                max_scroll = max(0, len(ai_lines) - (ai_pane_h - 1))
+                scroll_percent = self.intel_ai_scroll_top / max_scroll if max_scroll > 0 else 1.0
+                scrollbar_pos = int(scroll_percent * (ai_pane_h - 2))
+                for i in range(ai_pane_h - 1):
+                    char = '█' if i == scrollbar_pos else '░'
+                    sys.stdout.write(f"\x1b[{content_start_y + 1 + i};{ai_start_x + ai_w - 1}H{pop_bg}{self.theme['highlight_bg']}{char}{Colors.RESET}")
+
+        footer_y = pop_h - 2
+        status_text = self.intelligence_data.get('status_message', '').ljust(pop_w - 45)
+        
+        if self.intel_active_pane == 'ai':
+             help_text = "[TAB] Switch | [←/→] Tabs | [Enter] Chat".rjust(43)
+        else:
+             help_text = "[TAB] Switch Panes | [ESC] Back".rjust(43)
+             
+        footer_content = f" {status_text}{help_text} "
+        sys.stdout.write(f"\x1b[{footer_y};{start_x}H{self.theme['bar_bg']}{self.theme['bar_fg']}{footer_content.ljust(pop_w - 2)}{Colors.RESET}")
+        sys.stdout.flush()
+
+    def handle_intelligence_view_input(self, key):
+        """Handles input for the Intelligence View (scrolling, pane switching, chat)."""
+        if key == "ESC":
+            self.is_intelligence_view = False
+            self.intel_active_pane = 'article'
+            self.intel_article_scroll_top = 0
+            self.intel_ai_scroll_top = 0
+            self.intelligence_data['wrapped_article_lines'] = []
+            self.intelligence_data['wrapped_ai_lines'] = []
+            self.intel_chat_history = []
+            self.intel_chat_input = ""
+            self.needs_redraw = True
+            return
+
+        if key == '\t': # TAB key - Switch Panes
+            self.intel_active_pane = 'ai' if self.intel_active_pane == 'article' else 'article'
+            self.needs_redraw = True
+            return
+
+        # Global shortcuts for AI actions (only if not typing in chat)
+        is_chatting = (self.intel_active_pane == 'ai' and self.intel_tabs[self.intel_active_tab] == "Chat")
+        if not is_chatting:
+            if key.lower() == 's': self._run_ai_action('summary')
+            elif key.lower() == 'k': self._run_ai_action('key_points')
+
+        _, term_h = os.get_terminal_size()
+        
+        # --- ARTICLE PANE INPUT ---
+        if self.intel_active_pane == 'article':
+            article_lines = self.intelligence_data.get('wrapped_article_lines', [])
+            if article_lines:
+                content_pane_h = term_h - 4
+                max_scroll = max(0, len(article_lines) - content_pane_h)
+                if key == "UP": self.intel_article_scroll_top = max(0, self.intel_article_scroll_top - 1)
+                elif key == "DOWN": self.intel_article_scroll_top = min(max_scroll, self.intel_article_scroll_top + 1)
+                elif key == "PGUP": self.intel_article_scroll_top = max(0, self.intel_article_scroll_top - content_pane_h)
+                elif key == "PGDOWN": self.intel_article_scroll_top = min(max_scroll, self.intel_article_scroll_top + content_pane_h)
+                elif key == "HOME": self.intel_article_scroll_top = 0
+                elif key == "END": self.intel_article_scroll_top = max_scroll
+        
+        # --- AI PANE INPUT ---
+        elif self.intel_active_pane == 'ai':
+            tab_name = self.intel_tabs[self.intel_active_tab]
+            
+            if tab_name == "Chat":
+                if key == "LEFT" and not self.intel_chat_input: 
+                    self.intel_active_tab = max(0, self.intel_active_tab - 1)
+                elif key == "RIGHT" and not self.intel_chat_input:
+                     self.intel_active_tab = min(len(self.intel_tabs) - 1, self.intel_active_tab + 1)
+                elif key == "ENTER":
+                    if self.intel_chat_input.strip():
+                        self.intel_chat_auto_scroll = True # Reset auto-scroll on send
+                        self._run_chat_query(self.intel_chat_input.strip())
+                        self.intel_chat_input = ""
+                elif key == "BACKSPACE":
+                    self.intel_chat_input = self.intel_chat_input[:-1]
+                elif len(key) == 1 and key.isprintable():
+                    self.intel_chat_input += key
+                
+                # Chat Scrolling
+                # Calculate total lines for bounds checking
+                # This duplicates logic from draw, but we need it for bounds. 
+                # Optimization: Cache total_lines in intelligence_data or calc implicitly?
+                # For now, let's just do a rough check or recalc. Recalc is safer.
+                _, term_h = os.get_terminal_size()
+                ai_pane_h = term_h - 4
+                chat_h = ai_pane_h - 2
+                
+                # We need to know total lines to bound scrolling. 
+                # This is a bit expensive to recalc on every keypress but safe.
+                # In a real app we'd cache this in the draw loop.
+                # Let's verify if intelligence_data has it? No.
+                # Lets just do a quick calc:
+                total_lines = 0
+                term_w, _ = os.get_terminal_size()
+                available_w = term_w - 2
+                article_w = int(available_w * 0.66)
+                ai_w = available_w - article_w - 1
+                max_msg_w = ai_w - 2
+                
+                for msg in self.intel_chat_history:
+                    # Quick wrap calc
+                    l = len(textwrap.wrap(msg['text'], width=max_msg_w, initial_indent="XX: ", subsequent_indent="  "))
+                    total_lines += l
+                
+                max_scroll = max(0, total_lines - chat_h)
+
+                if key == "UP": 
+                    self.intel_chat_scroll_top = max(0, self.intel_chat_scroll_top - 1)
+                    self.intel_chat_auto_scroll = False
+                elif key == "DOWN": 
+                    self.intel_chat_scroll_top = min(max_scroll, self.intel_chat_scroll_top + 1)
+                    if self.intel_chat_scroll_top >= max_scroll:
+                        self.intel_chat_auto_scroll = True
+                elif key == "PGUP": 
+                    self.intel_chat_scroll_top = max(0, self.intel_chat_scroll_top - chat_h)
+                    self.intel_chat_auto_scroll = False
+                elif key == "PGDOWN": 
+                    self.intel_chat_scroll_top = min(max_scroll, self.intel_chat_scroll_top + chat_h)
+                    if self.intel_chat_scroll_top >= max_scroll:
+                        self.intel_chat_auto_scroll = True
+                elif key == "HOME":
+                    self.intel_chat_scroll_top = 0
+                    self.intel_chat_auto_scroll = False
+                elif key == "END":
+                    self.intel_chat_scroll_top = max_scroll
+                    self.intel_chat_auto_scroll = True
+
+            else:
+                # Summary or Deep Dive - Navigation + Scrolling
+                if key == "LEFT":
+                    self.intel_active_tab = max(0, self.intel_active_tab - 1)
+                elif key == "RIGHT":
+                    self.intel_active_tab = min(len(self.intel_tabs) - 1, self.intel_active_tab + 1)
+                elif key == "ENTER":
+                    # Trigger Deep Dive Analysis
+                    if self.intel_tabs[self.intel_active_tab] == "Deep Dive":
+                        self._run_ai_action('deep_dive')
+                
+                # Scrolling for text views
+                ai_lines = self.intelligence_data.get('wrapped_ai_lines', [])
+                if ai_lines:
+                    ai_pane_h = term_h - 4
+                    max_scroll = max(0, len(ai_lines) - (ai_pane_h - 1))
+                    if key == "UP": self.intel_ai_scroll_top = max(0, self.intel_ai_scroll_top - 1)
+                    elif key == "DOWN": self.intel_ai_scroll_top = min(max_scroll, self.intel_ai_scroll_top + 1)
+                    elif key == "PGUP": self.intel_ai_scroll_top = max(0, self.intel_ai_scroll_top - ai_pane_h)
+                    elif key == "PGDOWN": self.intel_ai_scroll_top = min(max_scroll, self.intel_ai_scroll_top + ai_pane_h)
+                    elif key == "HOME": self.intel_ai_scroll_top = 0
+                    elif key == "END": self.intel_ai_scroll_top = max_scroll
+
+        self.needs_redraw = True
+
+    def _run_chat_query(self, user_query):
+        """Submits a chat query to Ollama in a background thread."""
+        
+        # Add user message to history immediately
+        self.intel_chat_history.append({"role": "user", "text": user_query})
+        self.intel_chat_auto_scroll = True # Ensure we scroll to see user message
+        self.needs_redraw = True
+
+        def task(self_ref, query):
+            try:
+                # Prepare context from article
+                article_text = self_ref.intelligence_data.get('article_text', '')
+                
+                # Construct Prompt
+                # We include recent history to allow follow-up questions
+                history_text = ""
+                for msg in self_ref.intel_chat_history[-6:]: # Limit history context
+                    role = "User" if msg['role'] == 'user' else "Assistant"
+                    history_text += f"{role}: {msg['text']}\n"
+                
+                prompt = (
+                    f"You are a helpful AI assistant analyzing a news article.\n"
+                    f"Article Content:\n{article_text[:6000]}\n\n" # Truncate to avoid context limits
+                    f"Chat History:\n{history_text}\n"
+                    f"Assistant: "
+                )
+
+                self_ref.intelligence_data['status_message'] = "AI is thinking..."
+                self_ref.needs_redraw = True
+
+                # Placeholder for AI response
+                ai_msg = {"role": "ai", "text": ""}
+                self_ref.intel_chat_history.append(ai_msg)
+                
+                # Stream content into the last message in history
+                for chunk in ollama_client.query_ollama(prompt):
+                    self_ref.intel_chat_history[-1]['text'] += chunk
+                    self_ref.needs_redraw = True
+                
+                self_ref.intelligence_data['status_message'] = "Chat ready."
+                self_ref.needs_redraw = True
+
+            except Exception as e:
+                self_ref.intel_chat_history.append({"role": "ai", "text": f"[Error: {str(e)}]"})
+                self_ref.intelligence_data['status_message'] = "Chat failed."
+                self_ref.needs_redraw = True
+
+        threading.Thread(target=task, args=(self, user_query), daemon=True).start()
+
+    def _draw_trend_view(self, items_data):
+        """Draws the Trend Summary popup."""
+        self._draw(items_data, is_background=True)
+        term_w, term_h = os.get_terminal_size()
+        
+        start_x, start_y = 1, 1 
+        pop_w, pop_h = term_w, term_h
+        
+        title = " Trend Summary & Analysis "
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, title)
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+
+        # --- Draw Time Range Selector ---
+        ranges = ["Past Hour", "Past 24 Hours", "Past Week"]
+        selector_y = start_y + 2
+        sys.stdout.write(f"\x1b[{selector_y};{start_x + 2}H{pop_bg}{pop_fg}Time Range: ")
+        
+        current_x = start_x + 14
+        for i, r in enumerate(ranges):
+            if i == self.trend_time_range_index:
+                sys.stdout.write(f"\x1b[{selector_y};{current_x}H{self.theme['highlight_bg']}{self.theme['highlight_fg']} {r} {Colors.RESET}")
+            else:
+                sys.stdout.write(f"\x1b[{selector_y};{current_x}H{pop_bg}{Colors.LIGHT_GREY} {r} {Colors.RESET}")
+            current_x += len(r) + 4
+
+        sys.stdout.write(f"\x1b[{selector_y + 2};{start_x}H{pop_bg}{pop_fg}├{'─' * (pop_w - 2)}┤{Colors.RESET}")
+
+        # --- Draw Summary Content ---
+        content_start_y = selector_y + 3
+        content_h = pop_h - content_start_y - 3
+        
+        lines = self.trend_data.get('wrapped_lines', [])
+        if lines:
+            for i in range(content_h):
+                line_idx = self.trend_data['scroll_top'] + i
+                if line_idx < len(lines):
+                    line_text = lines[line_idx]
+                    sys.stdout.write(f"\x1b[{content_start_y + i};{start_x + 2}H{pop_bg}{Colors.CYAN}{line_text.ljust(pop_w - 4)}{Colors.RESET}")
+            
+            max_scroll = max(0, len(lines) - content_h)
+            scroll_percent = self.trend_data['scroll_top'] / max_scroll if max_scroll > 0 else 1.0
+            scrollbar_pos = int(scroll_percent * (content_h - 1))
+            for i in range(content_h):
+                char = '█' if i == scrollbar_pos else '░'
+                sys.stdout.write(f"\x1b[{content_start_y + i};{start_x + pop_w - 2}H{pop_bg}{self.theme['highlight_bg']}{char}{Colors.RESET}")
+
+        # --- Footer ---
+        footer_y = pop_h - 2
+        status_text = self.trend_data.get('status_message', '').ljust(pop_w - 40)
+        help_text = "[←/→] Range | [ENTER] Analyze | [ESC] Back".rjust(38)
+        footer_content = f" {status_text}{help_text} "
+        sys.stdout.write(f"\x1b[{footer_y};{start_x}H{self.theme['bar_bg']}{self.theme['bar_fg']}{footer_content.ljust(pop_w - 2)}{Colors.RESET}")
+        sys.stdout.flush()
+
+    def handle_trend_view_input(self, key):
+        if key == "ESC":
+            self.is_trend_view = False
+            self.needs_redraw = True
+            return
+
+        if key == "LEFT":
+            self.trend_time_range_index = max(0, self.trend_time_range_index - 1)
+            self.needs_redraw = True
+        elif key == "RIGHT":
+            self.trend_time_range_index = min(2, self.trend_time_range_index + 1)
+            self.needs_redraw = True
+        elif key == "ENTER":
+            self._run_trend_analysis()
+        
+        # Scrolling
+        _, term_h = os.get_terminal_size()
+        content_h = term_h - 8 # Approximate height of content area
+        lines = self.trend_data.get('wrapped_lines', [])
+        max_scroll = max(0, len(lines) - content_h)
+        
+        if key == "UP": self.trend_data['scroll_top'] = max(0, self.trend_data['scroll_top'] - 1)
+        elif key == "DOWN": self.trend_data['scroll_top'] = min(max_scroll, self.trend_data['scroll_top'] + 1)
+        elif key == "PGUP": self.trend_data['scroll_top'] = max(0, self.trend_data['scroll_top'] - content_h)
+        elif key == "PGDOWN": self.trend_data['scroll_top'] = min(max_scroll, self.trend_data['scroll_top'] + content_h)
+        elif key == "HOME": self.trend_data['scroll_top'] = 0
+        elif key == "END": self.trend_data['scroll_top'] = max_scroll
+        
+        self.needs_redraw = True
+
+    def _run_trend_analysis(self):
+        if "Querying" in self.trend_data['status_message']: return
+
+        def task(self_ref):
+            try:
+                # 1. Determine cutoff time
+                now = time.time()
+                if self_ref.trend_time_range_index == 0: cutoff = now - 3600 # 1 Hour
+                elif self_ref.trend_time_range_index == 1: cutoff = now - 86400 # 24 Hours
+                else: cutoff = now - 604800 # 1 Week
+
+                self_ref.trend_data['status_message'] = "Fetching articles from DB..."
+                self_ref.needs_redraw = True
+
+                # 2. Fetch articles
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT title, score, subreddit FROM articles WHERE created_utc > ? ORDER BY score DESC LIMIT 50", (cutoff,))
+                    rows = cursor.fetchall()
+                
+                if not rows:
+                    self_ref.trend_data['status_message'] = "No articles found in this time range."
+                    self_ref.trend_data['summary'] = "No data available to analyze."
+                    self_ref.trend_data['wrapped_lines'] = ["No data available."]
+                    self_ref.needs_redraw = True
+                    return
+
+                # 3. Prepare Prompt
+                articles_text = "\n".join([f"- [{row['subreddit']}] {row['title']} (Score: {row['score']})" for row in rows])
+                prompt = (
+                    f"Analyze the following list of popular news headlines from the past "
+                    f"{['hour', 'day', 'week'][self_ref.trend_time_range_index]}.\n"
+                    f"Identify the top 3-5 trending topics or themes. "
+                    f"For each trend, provide a brief summary of what is happening based on the headlines.\n"
+                    f"Format the output as a clear, bulleted list.\n\n"
+                    f"Headlines:\n{articles_text}"
+                )
+
+                self_ref.trend_data['status_message'] = "Querying Ollama for trends..."
+                self_ref.trend_data['summary'] = ""
+                self_ref.trend_data['wrapped_lines'] = []
+                self_ref.trend_data['scroll_top'] = 0
+                self_ref.needs_redraw = True
+
+                term_w, _ = os.get_terminal_size()
+                wrap_width = term_w - 6
+
+                # 4. Stream Response
+                for chunk in ollama_client.query_ollama(prompt):
+                    self_ref.trend_data['summary'] += chunk
+                    self_ref.trend_data['wrapped_lines'] = self_ref._format_ai_response(
+                        self_ref.trend_data['summary'], wrap_width
+                    )
+                    self_ref.needs_redraw = True
+                
+                self_ref.trend_data['status_message'] = "Analysis complete."
+                self_ref.needs_redraw = True
+
+            except Exception as e:
+                self_ref.trend_data['status_message'] = f"Error: {str(e)}"
+                self_ref.trend_data['wrapped_lines'] = [f"Error: {str(e)}"]
+                self_ref.needs_redraw = True
+
+        threading.Thread(target=task, args=(self,), daemon=True).start()
+
+    def _format_ai_response(self, text, wrap_width):
+        """Processes AI text, handling paragraph breaks and simple Markdown bullets."""
+        if not text:
+            return []
+
+        formatted_lines = []
+        paragraphs = text.split('\n')
+
+        for paragraph in paragraphs:
+            if paragraph.strip().startswith('* '):
+                line = "  • " + paragraph.strip()[2:]
+            else:
+                line = paragraph
+
+            if line.strip() == "":
+                formatted_lines.append("")
+            else:
+                formatted_lines.extend(textwrap.wrap(line, width=wrap_width))
+        
+        return formatted_lines
+
+    def _run_ai_action(self, action_type):
+        """Helper to run a specific AI analysis with live text streaming."""
+        if "Querying" in self.intelligence_data['status_message']:
+            return
+
+        def task(self_ref, action):
+            log_file_path = "analysis_error_log.txt"
+            try:
+                text = self_ref.intelligence_data['article_text']
+                if not text:
+                    self_ref.intelligence_data['status_message'] = "Error: Article text is empty."
+                    self_ref.needs_redraw = True
+                    return
+
+                # --- Clear previous response and prepare for streaming ---
+                self_ref.intelligence_data['ai_summary'] = ""
+                self_ref.intelligence_data['wrapped_ai_lines'] = []
+                self_ref.intel_ai_scroll_top = 0
+                self_ref.intelligence_data['status_message'] = f"Querying Ollama for {action.replace('_', ' ')}..."
+                self_ref.needs_redraw = True
+
+                if action == 'summary':
+                    prompt = f"Provide a concise, one-paragraph summary of the following news article:\n\n---\n\n{text[:8000]}"
+                elif action == 'key_points':
+                    prompt = f"Extract the key takeaways from this article. Present them as a Markdown bulleted list using '* ' for each point.\n\n---\n\n{text[:8000]}"
+                elif action == 'deep_dive':
+                    prompt = (
+                        f"Provide a comprehensive, in-depth analysis of this article. "
+                        f"Explore the historical context, potential implications, and multiple perspectives if applicable. "
+                        f"Go beyond a simple summary.\n\n---\n\n{text[:8000]}"
+                    )
+                else:
+                    return
+
+                term_w, _ = os.get_terminal_size()
+                # 33% width for AI pane
+                available_w = term_w - 2
+                article_w = int(available_w * 0.66)
+                ai_w = available_w - article_w - 1
+                wrap_width = ai_w - 3
+
+                # --- Consume the stream from Ollama ---
+                for chunk in ollama_client.query_ollama(prompt):
+                    self_ref.intelligence_data['ai_summary'] += chunk
+                    # Re-wrap the lines with the new, longer text
+                    self_ref.intelligence_data['wrapped_ai_lines'] = self_ref._format_ai_response(
+                        self_ref.intelligence_data['ai_summary'], wrap_width
+                    )
+                    # Trigger a redraw for each new chunk to create the "typing" effect
+                    self_ref.needs_redraw = True
+                
+                # --- Sync Result to Chat History ---
+                header = action.replace('_', ' ').title()
+                self_ref.intel_chat_history.append({"role": "ai", "text": f"**{header}:**\n{self_ref.intelligence_data['ai_summary']}"})
+
+                self.intelligence_data['status_message'] = "Response received. [S]ummary | [K]ey Points"
+                self.needs_redraw = True
+
+            except Exception:
+                with open(log_file_path, "w") as f:
+                    f.write(f"An error occurred during AI action: {action}\n\n")
+                    f.write(traceback.format_exc())
+                self_ref.intelligence_data['status_message'] = "Error in AI task. See log."
+                self_ref.needs_redraw = True
+
+        threading.Thread(target=task, args=(self, action_type), daemon=True).start()
+
+    def _fetch_and_analyze_article(self):
+        """
+        Background task to scrape, pre-format, and get the initial summary
+        with live text streaming.
+        """
+        log_file_path = "analysis_error_log.txt"
+        try:
+            url = self.intelligence_data['current_article_url']
+            if not url:
+                self.intelligence_data['status_message'] = "Error: URL is missing."
+                self.needs_redraw = True
+                return
+
+            self.intelligence_data['status_message'] = f"Scraping: {url}"
+            self.needs_redraw = True
+
+            title, result = scraper.scrape_in_subprocess(url)
+            
+            if title is None:
+                error_message = result
+                self.intelligence_data['status_message'] = "Scraping failed."
+                term_w, _ = os.get_terminal_size()
+                self.intelligence_data['wrapped_ai_lines'] = textwrap.wrap(error_message, width=term_w - 6)
+                self.needs_redraw = True
+                return
+            
+            text = result
+            self.intelligence_data['article_title'] = title
+            self.intelligence_data['article_text'] = text
+            self.intelligence_data['status_message'] = "Content extracted. Querying Ollama for initial summary..."
+
+            term_w, _ = os.get_terminal_size()
+            
+            # Recalculate split widths
+            available_w = term_w - 2
+            article_w = int(available_w * 0.66)
+            article_wrap_width = article_w - 3
+            
+            ai_w = available_w - article_w - 1
+            ai_wrap_width = ai_w - 3
+
+            wrapped_lines = []
+            for paragraph in text.split('\n'):
+                if paragraph.strip() == "":
+                    wrapped_lines.append("")
+                else:
+                    wrapped_lines.extend(textwrap.wrap(paragraph, width=article_wrap_width))
+                    wrapped_lines.append("")
+            self.intelligence_data['wrapped_article_lines'] = wrapped_lines
+            self.needs_redraw = True
+            
+            # --- Stream the initial summary from Ollama ---
+            prompt = f"You are an expert analyst. Provide a concise, insightful summary of the following article, focusing on key arguments and conclusions.\n\n---\n\n{text[:8000]}"
+            
+            # Clear previous response data
+            self.intelligence_data['ai_summary'] = ""
+            self.intelligence_data['wrapped_ai_lines'] = []
+            self.intel_ai_scroll_top = 0
+            
+            for chunk in ollama_client.query_ollama(prompt):
+                self.intelligence_data['ai_summary'] += chunk
+                self.intelligence_data['wrapped_ai_lines'] = self._format_ai_response(
+                    self.intelligence_data['ai_summary'], ai_wrap_width
+                )
+                self.needs_redraw = True
+
+            # --- Sync Summary to Chat History ---
+            self.intel_chat_history.append({"role": "ai", "text": f"**Initial Summary:**\n{self.intelligence_data['ai_summary']}"})
+            
+            self.intelligence_data['status_message'] = "Summary received. [S]ummary | [K]ey Points"
+            self.needs_redraw = True
+
+        except Exception as e:
+            with open(log_file_path, "w", encoding="utf-8") as f:
+                f.write(f"An error occurred while analyzing URL: {self.intelligence_data.get('current_article_url', 'N/A')}\n\n")
+                f.write(traceback.format_exc())
+
+            error_message = "An unexpected error occurred. Check 'analysis_error_log.txt'."
+            self.intelligence_data['status_message'] = "Analysis Failed!"
+            self.intelligence_data['ai_summary'] = textwrap.fill(error_message, width=80)
+            self.needs_redraw = True
+
+    def _draw_comment_analysis_view(self, items_data):
+        """Draws the Comment Analysis popup."""
+        if self.is_domain_view:
+            self._draw_domain_view(items_data, is_background=True)
+        else:
+            self._draw(items_data, is_background=True)
+            
+        term_w, term_h = os.get_terminal_size()
+        
+        pop_w, pop_h = int(term_w * 0.9), int(term_h * 0.9)
+        start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
+        
+        title = " Comment Sentiment & Summary "
+        self._draw_popup_border(start_x, start_y, pop_w, pop_h, title)
+        pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
+
+        # --- Draw Summary Content ---
+        content_start_y = start_y + 2
+        content_h = pop_h - 4
+        
+        lines = self.comment_analysis_data.get('wrapped_lines', [])
+        if lines:
+            for i in range(content_h):
+                line_idx = self.comment_analysis_data['scroll_top'] + i
+                if line_idx < len(lines):
+                    line_text = lines[line_idx]
+                    sys.stdout.write(f"\x1b[{content_start_y + i};{start_x + 2}H{pop_bg}{Colors.CYAN}{line_text.ljust(pop_w - 4)}{Colors.RESET}")
+            
+            max_scroll = max(0, len(lines) - content_h)
+            scroll_percent = self.comment_analysis_data['scroll_top'] / max_scroll if max_scroll > 0 else 1.0
+            scrollbar_pos = int(scroll_percent * (content_h - 1))
+            for i in range(content_h):
+                char = '█' if i == scrollbar_pos else '░'
+                sys.stdout.write(f"\x1b[{content_start_y + i};{start_x + pop_w - 2}H{pop_bg}{self.theme['highlight_bg']}{char}{Colors.RESET}")
+
+        # --- Footer ---
+        footer_y = pop_h - 2
+        status_text = self.comment_analysis_data.get('status_message', '').ljust(pop_w - 20)
+        help_text = "[ESC] Back".rjust(18)
+        footer_content = f" {status_text}{help_text} "
+        sys.stdout.write(f"\x1b[{footer_y};{start_x}H{self.theme['bar_bg']}{self.theme['bar_fg']}{footer_content.ljust(pop_w - 2)}{Colors.RESET}")
+        sys.stdout.flush()
+
+    def handle_comment_analysis_input(self, key):
+        if key == "ESC":
+            self.is_comment_analysis_view = False
+            self.needs_redraw = True
+            return
+        
+        # Scrolling
+        _, term_h = os.get_terminal_size()
+        content_h = term_h - 4
+        lines = self.comment_analysis_data.get('wrapped_lines', [])
+        max_scroll = max(0, len(lines) - content_h)
+        
+        if key == "UP": self.comment_analysis_data['scroll_top'] = max(0, self.comment_analysis_data['scroll_top'] - 1)
+        elif key == "DOWN": self.comment_analysis_data['scroll_top'] = min(max_scroll, self.comment_analysis_data['scroll_top'] + 1)
+        elif key == "PGUP": self.comment_analysis_data['scroll_top'] = max(0, self.comment_analysis_data['scroll_top'] - content_h)
+        elif key == "PGDOWN": self.comment_analysis_data['scroll_top'] = min(max_scroll, self.comment_analysis_data['scroll_top'] + content_h)
+        elif key == "HOME": self.comment_analysis_data['scroll_top'] = 0
+        elif key == "END": self.comment_analysis_data['scroll_top'] = max_scroll
+        
+        self.needs_redraw = True
+
+    def _run_comment_analysis(self):
+        if "Querying" in self.comment_analysis_data['status_message']: return
+
+        def task(self_ref):
+            try:
+                self_ref.comment_analysis_data['status_message'] = "Extracting comments..."
+                self_ref.needs_redraw = True
+
+                # 1. Extract Comments
+                comments_text = []
+                # Flatten the tree to get a list of comments
+                flat_comments = []
+                self_ref._flatten_comment_tree(self_ref.comment_tree, flat_comments)
+                
+                # Take top 30 comments to avoid hitting context limits too hard
+                # Prioritize top-level comments (depth 0) and high scores
+                sorted_comments = sorted(flat_comments, key=lambda c: (c.depth == 0, c.score), reverse=True)[:30]
+                
+                for c in sorted_comments:
+                    body = c.body
+                    # Basic cleanup
+                    body = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'\1', body) # Remove link markdown
+                    comments_text.append(f"- {body[:300]}") # Truncate very long comments
+
+                if not comments_text:
+                    self_ref.comment_analysis_data['status_message'] = "No comments found to analyze."
+                    self_ref.comment_analysis_data['summary'] = "No comments available."
+                    self_ref.comment_analysis_data['wrapped_lines'] = ["No comments available."]
+                    self_ref.needs_redraw = True
+                    return
+
+                full_text = "\n".join(comments_text)
+
+                # 2. Prepare Prompt
+                prompt = (
+                    f"Analyze the following comments from a Reddit discussion.\n"
+                    f"1. Determine the overall sentiment (Positive, Negative, Mixed, Neutral).\n"
+                    f"2. Summarize the main points, arguments, or reactions expressed by the users.\n"
+                    f"Format the output clearly with headings.\n\n"
+                    f"Comments:\n{full_text}"
+                )
+
+                self_ref.comment_analysis_data['status_message'] = "Querying Ollama..."
+                self_ref.comment_analysis_data['summary'] = ""
+                self_ref.comment_analysis_data['wrapped_lines'] = []
+                self_ref.comment_analysis_data['scroll_top'] = 0
+                self_ref.needs_redraw = True
+
+                term_w, _ = os.get_terminal_size()
+                pop_w = int(term_w * 0.9)
+                wrap_width = pop_w - 6
+
+                # 3. Stream Response
+                for chunk in ollama_client.query_ollama(prompt):
+                    self_ref.comment_analysis_data['summary'] += chunk
+                    self_ref.comment_analysis_data['wrapped_lines'] = self_ref._format_ai_response(
+                        self_ref.comment_analysis_data['summary'], wrap_width
+                    )
+                    self_ref.needs_redraw = True
+                
+                self_ref.comment_analysis_data['status_message'] = "Analysis complete."
+                self_ref.needs_redraw = True
+
+            except Exception as e:
+                self_ref.comment_analysis_data['status_message'] = f"Error: {str(e)}"
+                self_ref.comment_analysis_data['wrapped_lines'] = [f"Error: {str(e)}"]
+                self_ref.needs_redraw = True
+
+        threading.Thread(target=task, args=(self,), daemon=True).start()
+
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
@@ -689,40 +1588,62 @@ class NewsFeedMenu:
         actionable_options = {k: v for k, v in options_dict.items() if v != 'separator'}
         actionable_keys = list(actionable_options.keys())
         max_index = len(actionable_keys) - 1
-        if key == "ESC": self.is_action_menu_view = False
-        elif key == "UP": self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
-        elif key == "DOWN": self.action_menu_selected_index = min(max_index, self.action_menu_selected_index + 1)
-        elif key == "ENTER":
+        if key == "ESC" or key == "LEFT":
+            self.is_action_menu_view = False
+        elif key == "UP":
+            self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
+        elif key == "DOWN":
+            self.action_menu_selected_index = min(max_index, self.action_menu_selected_index + 1)
+        elif key == "ENTER" or key == "RIGHT":
             action = actionable_options[actionable_keys[self.action_menu_selected_index]]
             url = self.action_menu_article['url']
             if action == "delete_article":
                 self.article_to_delete, self.is_delete_confirm_view = self.action_menu_article, True
-            elif action == "open_article": threading.Thread(target=webbrowser.open, args=(url,)).start()
-            elif action == "watch_mpv":
+            elif action == "open_article":
+                threading.Thread(target=webbrowser.open, args=(url,)).start()
+            elif action == "watch_video":
                 try:
                     kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
-                    if sys.platform == "win32": kwargs['creationflags'] = 0x00000200 | 0x00000008
-                    else: kwargs['start_new_session'] = True
-                    
+                    if sys.platform == "win32":
+                        kwargs['creationflags'] = 0x00000200 | 0x00000008
+                    else:
+                        kwargs['start_new_session'] = True
                     subprocess.Popen([VIDEO_PLAYER_PATH, url], **kwargs)
-                    self.status_message, self.status_message_timer = "Launching video in player...", 50
-                except FileNotFoundError: self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
-            elif action == "open_comments": threading.Thread(target=webbrowser.open, args=(f"https://www.reddit.com{self.action_menu_article['permalink']}",)).start()
-            elif action == "summarize": threading.Thread(target=webbrowser.open, args=(f"https://www.perplexity.ai/?s=o&q={quote(f'summarize {url}')}",)).start()
+                    self.status_message, self.status_message_timer = "Launching in Video Player...", 50
+                except FileNotFoundError:
+                    self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
+            elif action == "open_comments":
+                threading.Thread(target=webbrowser.open, args=(f"https://www.reddit.com{self.action_menu_article['permalink']}",)).start()
+            elif action == "summarize":
+                threading.Thread(target=webbrowser.open, args=(f"https://www.perplexity.ai/?s=o&q={quote(f'summarize {url}')}",)).start()
             elif action == "copy_url":
                 self._copy_to_clipboard(url)
                 self.status_message, self.status_message_timer = "URL copied to clipboard!", 50
-            elif action == "archive": threading.Thread(target=webbrowser.open, args=(f"https://archive.is/{quote(url)}",)).start()
+            elif action == "archive":
+                threading.Thread(target=webbrowser.open, args=(f"https://archive.is/{quote(url)}",)).start()
+            elif action == "find_domain":
+                domain = get_domain_from_url(url)
+                if domain:
+                    self.is_domain_view = True
+                    self.domain_view_title = f"Articles from {domain}"
+                    self.domain_articles = []
+                    self.domain_view_selected_index = 0
+                    self.domain_view_scroll_top = 0
+                    self.status_message, self.status_message_timer = f"Fetching articles from {domain}...", 50
+                    threading.Thread(target=self._fetch_domain_articles_threaded, args=(domain,), daemon=True).start()
+                else:
+                    self.status_message, self.status_message_timer = "Error: Could not determine domain.", 50
+
             elif action == "exclude_domain":
                 domain_to_block = get_domain_from_url(url)
                 if domain_to_block and domain_to_block not in BLOCKED_DOMAINS:
                     BLOCKED_DOMAINS.add(domain_to_block)
-                    
                     save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting, self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
                     self.all_articles = [a for a in self.all_articles if get_domain_from_url(a.get('url')) != domain_to_block]
                     self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
                     self.status_message, self.status_message_timer = f"Domain '{domain_to_block}' is now hidden.", 50
                     self.force_regenerate_view = True
+            
             self.is_action_menu_view = False
         self.needs_redraw = True
 
@@ -799,6 +1720,7 @@ class NewsFeedMenu:
             "---SEPARATOR_1---": "separator",
             "Copy URL to Clipboard": "copy_url",
             "Archive Page (archive.is)": "archive",
+            "Find more from this domain": "find_domain",
             "---SEPARATOR_2---": "separator",
             "Exclude this domain": "exclude_domain",
             "---SEPARATOR_3---": "separator",
@@ -840,17 +1762,19 @@ class NewsFeedMenu:
     def _fetch_comments_threaded(self, permalink):
         if not permalink: self.comment_view_status, self.needs_redraw = "Error: No permalink.", True; return
         try:
-            url, headers = f"https://www.reddit.com{permalink.rstrip('/')}.json", {"User-Agent": "live_news_feed_script/2.6"}
-            response = requests.get(url, headers=headers, timeout=10); response.raise_for_status()
-            raw_comments = response.json()[1].get("data", {}).get("children", [])
-            if not raw_comments: self.comment_view_status = "No comments found."
-            else: self.comment_tree, self.comment_view_status = self._parse_comments_to_tree(raw_comments), ""
+            mode, data = fetch_reddit_comments(permalink)
+            if mode == "json":
+                if not data: self.comment_view_status = "No comments found."
+                else: self.comment_tree, self.comment_view_status = self._parse_comments_to_tree(data), ""
+            else:
+                if not data: self.comment_view_status = "No comments found."
+                else: self.comment_tree, self.comment_view_status = [CommentNode(c, depth=0) for c in data], ""
             self.comment_selected_index, self.comment_scroll_top = 0, 0
 
             # Prepare the lines for drawing once
             self._prepare_comment_lines()
 
-        except (requests.exceptions.RequestException, IndexError, KeyError) as e: self.comment_view_status = f"Error: {e}"
+        except Exception as e: self.comment_view_status = f"Error: {e}"
         self.needs_redraw = True
 
     def _format_comment_body(self, text):
@@ -1024,9 +1948,10 @@ class NewsFeedMenu:
         content = [
             f"{header_color}== Navigation ==",
             f"  {key_color}[↑/↓]{desc_color}     - Navigate articles",
-            f"  {key_color}[←/→]{desc_color}     - Page up/down",
+            f"  {key_color}[←/PgUp]{desc_color}  - Page up",
+            f"  {key_color}[PgDn]{desc_color}    - Page down",
             f"{header_color}== Actions ==",
-            f"  {key_color}[Enter]{desc_color}   - Open Action Menu for selected article",
+            f"  {key_color}[→/Enter]{desc_color} - Open Action Menu for selected article",
             f"  {key_color}[b]{desc_color}       - Bookmark/unbookmark an article",
             f"  {key_color}[m]{desc_color}       - Mark all new articles as seen",
             f"  {key_color}[c]{desc_color}       - View article comments in-app",
@@ -1068,7 +1993,10 @@ class NewsFeedMenu:
         sys.stdout.flush()
 
     def _draw_action_menu(self, items_data):
-        self._draw(items_data, is_background=True)
+        if self.is_domain_view:
+            self._draw_domain_view(items_data, is_background=True)
+        else:
+            self._draw(items_data, is_background=True)
         options_dict = self._get_action_menu_options()
         options_list = list(options_dict.keys())
         term_w, term_h = os.get_terminal_size()
@@ -1133,7 +2061,6 @@ class NewsFeedMenu:
             f"Refresh Time (s): < {self.fetch_interval_setting} >",
             f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
             f"Show Clock: {clock_status}",
-            # --- This is the new option that should appear ---
             f"Video Player Path: {video_path_text}",
             f"Blocked Domains: {blocked_text}",
             f"Highlight Words: {highlight_text}",
@@ -1174,7 +2101,10 @@ class NewsFeedMenu:
     def _draw_comments(self, items_data):
         # Allow this method to be called for background drawing without clearing the whole screen
         if not self.is_link_view:
-            self._draw(items_data, is_background=True)
+            if self.is_domain_view:
+                self._draw_domain_view(items_data, is_background=True)
+            else:
+                self._draw(items_data, is_background=True)
 
         term_w, term_h = os.get_terminal_size()
         pop_w, pop_h = int(term_w * 0.9), int(term_h * 0.9)
@@ -1270,9 +2200,33 @@ class NewsFeedMenu:
             sys.stdout.write(f'\x1b[3;1HNo articles found...{Colors.RESET}')
         else:
             self.selected_index = max(0, min(self.selected_index, len(items_data)-1))
-            max_view = max(1, term_h - 5)
-            if self.selected_index < self.scroll_top: self.scroll_top = self.selected_index
-            if self.selected_index >= self.scroll_top + max_view: self.scroll_top = self.selected_index-max_view+1
+            max_view = max(1, term_h - 4)
+            
+            self.selected_index = max(0, min(self.selected_index, len(items_data)-1))
+            max_view = max(1, term_h - 4)
+
+            # Define the "scroll offset" (how many lines from the edge to trigger a scroll)
+            # Ensure the offset isn't larger than half the screen
+            safe_offset = min(self.scroll_offset, max_view // 2)
+
+            # 1. Scrolling Up: If selection is within the top offset
+            if self.selected_index < self.scroll_top + safe_offset:
+                # Set scroll_top to keep the selection at the offset
+                self.scroll_top = self.selected_index - safe_offset
+            
+            # 2. Scrolling Down: If selection is within the bottom offset
+            elif self.selected_index > self.scroll_top + (max_view - 1 - safe_offset):
+                # Set scroll_top to keep the selection at the trigger position
+                self.scroll_top = self.selected_index - (max_view - 1 - safe_offset)
+
+            # 3. Clamp scroll_top to valid bounds
+            self.scroll_top = max(0, self.scroll_top)
+            if len(items_data) > max_view:
+                self.scroll_top = min(self.scroll_top, len(items_data) - max_view)
+            else:
+                self.scroll_top = 0 # If all items fit, scroll_top is always 0
+            
+
             for i in range(self.scroll_top, min(self.scroll_top+max_view, len(items_data))):
                 item, row = items_data[i], i-self.scroll_top+3
                 is_highlighted = any(kw in item['title'].lower() for kw in HIGHLIGHT_KEYWORDS)
@@ -1285,7 +2239,8 @@ class NewsFeedMenu:
                 if item.get('is_new'): title_color = self.theme['new_fg']
                 elif item.get('is_read'): title_color = Colors.LIGHT_GREY
 
-                display = f"{title_color}{format_time_ago(item.get('created_utc')):<8} {sub} {src}{Colors.RESET} {highlight_icon}{bookmark}{video_icon}{item.get('title')}{Colors.RESET}"
+                score = item.get('score', 0)
+                display = f"{title_color}{format_time_ago(item.get('created_utc')):<8} {sub} {src}{Colors.RESET} {highlight_icon}{bookmark}{video_icon}{self.theme['new_fg']}[{score}]{Colors.RESET} {item.get('title')}{Colors.RESET}"
                 line = f"> {display}" if i == self.selected_index else f"  {display}"
 
                 plain_text_len = len(re.sub(r'\x1b\[[0-9;]*m', '', line))
@@ -1367,35 +2322,79 @@ class NewsFeedMenu:
                 self.needs_redraw = True
 
             if self.needs_redraw:
-                if self.is_delete_confirm_view: self._draw_confirmation_popup(items_data, "Permanently delete this article? (y/n)")
-                elif self.is_exit_confirm_view: self._draw_confirmation_popup(items_data, "Are you sure you want to quit? (y/n)")
-                elif self.is_action_menu_view: self._draw_action_menu(items_data)
-                elif self.is_settings_view: self._draw_settings(items_data)
-                elif self.is_filter_menu_view: self._draw_filter_menu(items_data)
-                elif self.is_link_view: self._draw_link_popup(items_data)
-                elif self.is_comment_view: self._draw_comments(items_data)
-                elif self.is_help_view: self._draw_help_menu(items_data)
-                elif self.is_import_view: self._draw_import_instructions(items_data)
-                elif self.is_profile_view: self._draw_profile_manager(items_data)
-                elif self.is_subreddit_edit_view: self._draw_subreddit_editor(items_data)
-                else: self._draw(items_data)
+                # A single if/elif chain ensures only one view is drawn per cycle.
+                if self.is_intelligence_view:
+                    self._draw_intelligence_view(items_data)
+                elif self.is_delete_confirm_view:
+                    self._draw_confirmation_popup(items_data, "Permanently delete this article? (y/n)")
+                elif self.is_exit_confirm_view:
+                    self._draw_confirmation_popup(items_data, "Are you sure you want to quit? (y/n)")
+                elif self.is_action_menu_view:
+                    self._draw_action_menu(items_data)
+                elif self.is_settings_view:
+                    self._draw_settings(items_data)
+                elif self.is_filter_menu_view:
+                    self._draw_filter_menu(items_data)
+                elif self.is_link_view:
+                    self._draw_link_popup(items_data)
+                elif self.is_comment_analysis_view:
+                    self._draw_comment_analysis_view(items_data)
+                elif self.is_comment_view:
+                    self._draw_comments(items_data)
+                elif self.is_help_view:
+                    self._draw_help_menu(items_data)
+                elif self.is_import_view:
+                    self._draw_import_instructions(items_data)
+                elif self.is_profile_view:
+                    self._draw_profile_manager(items_data)
+                elif self.is_subreddit_edit_view:
+                    self._draw_subreddit_editor(items_data)
+                elif self.is_trend_view:
+                    self._draw_trend_view(items_data)
+                elif self.is_domain_view:
+                    self._draw_domain_view(items_data)
+                else:
+                    self._draw(items_data)
                 self.needs_redraw = False
 
             key = getch()
             if not key: continue
-            if self.is_delete_confirm_view: self.handle_delete_confirm_input(key, items_data)
-            elif self.is_exit_confirm_view: self.handle_exit_confirm_input(key)
-            elif self.is_action_menu_view: self.handle_action_menu_input(key)
-            elif self.is_settings_view: self.handle_settings_input(key)
-            elif self.is_filter_menu_view: self.handle_filter_menu_input(key)
-            elif self.is_link_view: self.handle_link_input(key)
-            elif self.is_comment_view: self.handle_comment_view_input(key)
-            elif self.is_help_view: self.handle_help_view_input(key)
-            elif self.is_import_view: self.handle_import_view_input(key)
-            elif self.is_profile_view: self.handle_profile_input(key)
-            elif self.is_subreddit_edit_view: self.handle_subreddit_edit_input(key)
-            elif self.is_search_view: self.handle_search_view_input(key, items_data)
-            else: self.handle_main_view_input(key, items_data)
+            
+            # A single if/elif chain ensures only one input handler is used.
+            if self.is_intelligence_view:
+                self.handle_intelligence_view_input(key)
+            elif self.is_delete_confirm_view:
+                self.handle_delete_confirm_input(key, items_data)
+            elif self.is_exit_confirm_view:
+                self.handle_exit_confirm_input(key)
+            elif self.is_action_menu_view:
+                self.handle_action_menu_input(key)
+            elif self.is_settings_view:
+                self.handle_settings_input(key)
+            elif self.is_filter_menu_view:
+                self.handle_filter_menu_input(key)
+            elif self.is_link_view:
+                self.handle_link_input(key)
+            elif self.is_comment_analysis_view:
+                self.handle_comment_analysis_input(key)
+            elif self.is_comment_view:
+                self.handle_comment_view_input(key)
+            elif self.is_help_view:
+                self.handle_help_view_input(key)
+            elif self.is_import_view:
+                self.handle_import_view_input(key)
+            elif self.is_profile_view:
+                self.handle_profile_input(key)
+            elif self.is_subreddit_edit_view:
+                self.handle_subreddit_edit_input(key)
+            elif self.is_trend_view:
+                self.handle_trend_view_input(key)
+            elif self.is_search_view:
+                self.handle_search_view_input(key, items_data)
+            elif self.is_domain_view:
+                self.handle_domain_view_input(key)
+            else:
+                self.handle_main_view_input(key, items_data)
 
     def handle_delete_confirm_input(self, key, items_data):
         if key.lower() == 'y':
@@ -1434,29 +2433,40 @@ class NewsFeedMenu:
         actionable_options = {k: v for k, v in options_dict.items() if v != 'separator'}
         actionable_keys = list(actionable_options.keys())
         max_index = len(actionable_keys) - 1
-        if key == "ESC": self.is_action_menu_view = False
-        elif key == "UP": self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
-        elif key == "DOWN": self.action_menu_selected_index = min(max_index, self.action_menu_selected_index + 1)
-        elif key == "ENTER":
+        
+        if key == "ESC" or key == "LEFT":
+            self.is_action_menu_view = False
+        elif key == "UP":
+            self.action_menu_selected_index = max(0, self.action_menu_selected_index - 1)
+        elif key == "DOWN":
+            self.action_menu_selected_index = min(max_index, self.action_menu_selected_index + 1)
+        elif key == "ENTER" or key == "RIGHT":
             action = actionable_options[actionable_keys[self.action_menu_selected_index]]
             url = self.action_menu_article['url']
             if action == "delete_article":
                 self.article_to_delete, self.is_delete_confirm_view = self.action_menu_article, True
-            elif action == "open_article": threading.Thread(target=webbrowser.open, args=(url,)).start()
+            elif action == "open_article":
+                threading.Thread(target=webbrowser.open, args=(url,)).start()
             elif action == "watch_video":
                 try:
                     kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
-                    if sys.platform == "win32": kwargs['creationflags'] = 0x00000200 | 0x00000008
-                    else: kwargs['start_new_session'] = True
+                    if sys.platform == "win32":
+                        kwargs['creationflags'] = 0x00000200 | 0x00000008
+                    else:
+                        kwargs['start_new_session'] = True
                     subprocess.Popen([VIDEO_PLAYER_PATH, url], **kwargs)
                     self.status_message, self.status_message_timer = "Launching in Video Player...", 50
-                except FileNotFoundError: self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
-            elif action == "open_comments": threading.Thread(target=webbrowser.open, args=(f"https://www.reddit.com{self.action_menu_article['permalink']}",)).start()
-            elif action == "summarize": threading.Thread(target=webbrowser.open, args=(f"https://www.perplexity.ai/?s=o&q={quote(f'summarize {url}')}",)).start()
+                except FileNotFoundError:
+                    self.status_message, self.status_message_timer = f"Error: '{VIDEO_PLAYER_PATH}' not found.", 50
+            elif action == "open_comments":
+                threading.Thread(target=webbrowser.open, args=(f"https://www.reddit.com{self.action_menu_article['permalink']}",)).start()
+            elif action == "summarize":
+                threading.Thread(target=webbrowser.open, args=(f"https://www.perplexity.ai/?s=o&q={quote(f'summarize {url}')}",)).start()
             elif action == "copy_url":
                 self._copy_to_clipboard(url)
                 self.status_message, self.status_message_timer = "URL copied to clipboard!", 50
-            elif action == "archive": threading.Thread(target=webbrowser.open, args=(f"https://archive.is/{quote(url)}",)).start()
+            elif action == "archive":
+                threading.Thread(target=webbrowser.open, args=(f"https://archive.is/{quote(url)}",)).start()
             elif action == "exclude_domain":
                 domain_to_block = get_domain_from_url(url)
                 if domain_to_block and domain_to_block not in BLOCKED_DOMAINS:
@@ -1466,9 +2476,16 @@ class NewsFeedMenu:
                     self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
                     self.status_message, self.status_message_timer = f"Domain '{domain_to_block}' is now hidden.", 50
                     self.force_regenerate_view = True
+            elif action == "find_domain":
+                domain = get_domain_from_url(url)
+                self.is_domain_view = True
+                self.domain_view_title = f"Articles from {domain}"
+                self.status_message = f"Fetching articles from {domain}..."
+                self.status_message_timer = 50
+                threading.Thread(target=self._fetch_domain_articles_threaded, args=(domain,), daemon=True).start()
             self.is_action_menu_view = False
         self.needs_redraw = True
-
+        
     def handle_settings_input(self, key):
         global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH
 
@@ -1577,6 +2594,13 @@ class NewsFeedMenu:
                     else:
                         self.status_message = "No links found in this comment."
                         self.status_message_timer = 30 # Show for ~3 seconds
+            elif key == 'a':
+                if self.visible_comments:
+                    self.is_comment_analysis_view = True
+                    self._run_comment_analysis()
+                else:
+                    self.status_message = "No comments to analyze."
+                    self.status_message_timer = 30
 
             if original_index != self.comment_selected_index: self.needs_redraw = True
 
@@ -1605,14 +2629,90 @@ class NewsFeedMenu:
             else: self.handle_main_view_input(key, items_data)
         self.needs_redraw = True
 
+    def _fetch_domain_articles_threaded(self, domain):
+        """Fetches articles from a specific domain in a background thread."""
+        try:
+            articles = fetch_reddit_domain_posts(domain)
+            self.domain_articles = articles
+            self.status_message = f"Found {len(articles)} articles from {domain}."
+            self.status_message_timer = 50
+            self.needs_redraw = True
+
+        except Exception as e:
+            self.status_message = f"Error fetching domain articles: {str(e)}"
+            self.status_message_timer = 50
+            self.needs_redraw = True
+
+    def _draw_domain_view(self, items_data, is_background=False):
+        """Draws the domain-specific article list using the main draw logic."""
+        # Swap state to reuse the main draw function
+        main_idx, main_scroll = self.selected_index, self.scroll_top
+        self.selected_index, self.scroll_top = self.domain_view_selected_index, self.domain_view_scroll_top
+        
+        # Override title temporarily
+        original_title = self.title
+        self.title = self.domain_view_title
+        
+        # Draw using the domain articles
+        self._draw(self.domain_articles, is_background=is_background)
+        
+        # Save the domain view state (as _draw might have updated scroll_top)
+        self.domain_view_selected_index, self.domain_view_scroll_top = self.selected_index, self.scroll_top
+
+        # Restore main state
+        self.selected_index, self.scroll_top = main_idx, main_scroll
+        self.title = original_title
+
+    def handle_domain_view_input(self, key):
+        """Handles input for the domain view."""
+        if not self.domain_articles and key != "ESC": return
+
+        if key == "ESC":
+            self.is_domain_view = False
+            self.needs_redraw = True
+            return
+        
+        # Navigation
+        if key == "UP": self.domain_view_selected_index = max(0, self.domain_view_selected_index - 1)
+        elif key == "DOWN": self.domain_view_selected_index = min(len(self.domain_articles) - 1, self.domain_view_selected_index + 1)
+        elif key == "PGUP": self.domain_view_selected_index = max(0, self.domain_view_selected_index - self.page_jump)
+        elif key == "PGDOWN": self.domain_view_selected_index = min(len(self.domain_articles) - 1, self.domain_view_selected_index + self.page_jump)
+        elif key == "HOME": self.domain_view_selected_index = 0
+        elif key == "END": self.domain_view_selected_index = len(self.domain_articles) - 1
+        
+        # Actions
+        # Actions
+        elif key == "ENTER":
+            if self.domain_articles:
+                self.is_action_menu_view, self.action_menu_article, self.action_menu_selected_index = True, self.domain_articles[self.domain_view_selected_index], 0
+        elif key == "c":
+            if self.domain_articles:
+                self.is_comment_view, self.comment_view_status = True, "Loading comments..."
+                threading.Thread(target=self._fetch_comments_threaded, args=(self.domain_articles[self.domain_view_selected_index].get('permalink'),)).start()
+        elif key == "a" or key == "RIGHT":
+            if self.domain_articles:
+                self.is_intelligence_view = True
+                selected_article = self.domain_articles[self.domain_view_selected_index]
+                self.intelligence_data = {
+                    "article_title": selected_article['title'],
+                    "article_text": "",
+                    "ai_summary": "",
+                    "status_message": "Initializing analysis...",
+                    "current_article_url": selected_article['url']
+                }
+                threading.Thread(target=self._fetch_and_analyze_article, daemon=True).start()
+                self.needs_redraw = True
+        
+        self.needs_redraw = True
+
     def handle_main_view_input(self, key, items_data):
         """Handles all key presses for the main article list view."""
-        if not items_data and key not in ["ESC", "s", "v", "/", "h", "p"]: return
+        if not items_data and key not in ["ESC", "s", "v", "/", "h", "p", "t"]: return
         original_index = self.selected_index
         if key == "UP": self.selected_index = max(0, self.selected_index - 1)
         elif key == "DOWN": self.selected_index = min(len(items_data) - 1, self.selected_index + 1)
         elif key == "LEFT" or key == "PGUP": self.selected_index = max(0, self.selected_index - self.page_jump)
-        elif key == "RIGHT" or key == "PGDOWN": self.selected_index = min(len(items_data) - 1, self.selected_index + self.page_jump)
+        elif key == "PGDOWN": self.selected_index = min(len(items_data) - 1, self.selected_index + self.page_jump)
         elif key == "HOME": self.selected_index = 0
         elif key == "END": self.selected_index = len(items_data) - 1
         elif key == "DELETE":
@@ -1641,11 +2741,39 @@ class NewsFeedMenu:
                 threading.Thread(target=self._fetch_comments_threaded, args=(items_data[self.selected_index].get('permalink'),)).start()
         elif key == "s": self.is_settings_view = True
         elif key == "h": self.is_help_view = True
-        elif key == "p": self.is_profile_view = True
+        elif key == "p": 
+            self.is_profile_view = True
+            try:
+                self.profile_selected_index = self.profiles.index(self.active_profile)
+            except ValueError:
+                self.profile_selected_index = 0
         elif key == 'v':
             self.is_filter_menu_view = True
             self.filter_menu_selected_index = self.current_view_mode_index
         elif key == '/': self.is_search_view, self.search_query, self.search_input_active = True, "", True
+        elif key.lower() == 't':
+            self.is_trend_view = True
+            self.trend_data = {
+                "summary": "",
+                "wrapped_lines": [],
+                "status_message": "Ready to analyze.",
+                "scroll_top": 0
+            }
+            self.needs_redraw = True
+        elif key.lower() == 'a' or key == "RIGHT":
+            if items_data:
+                self.is_intelligence_view = True
+                selected_article = items_data[self.selected_index]
+                self.intelligence_data = { # Reset the state
+                    "article_title": selected_article['title'],
+                    "article_text": "",
+                    "ai_summary": "",
+                    "status_message": "Initializing analysis...",
+                    "current_article_url": selected_article['url']
+                }
+                # Launch the background task
+                threading.Thread(target=self._fetch_and_analyze_article, daemon=True).start()
+                self.needs_redraw = True
         elif key == "ENTER":
             if items_data:
                 self.is_action_menu_view, self.action_menu_article, self.action_menu_selected_index = True, items_data[self.selected_index], 0
@@ -1903,6 +3031,8 @@ def import_database(path_str, profile_name):
         sys.exit(0)
 
 if __name__ == '__main__':
+    import multiprocessing
+    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(description="A terminal-based news feed reader.")
     parser.add_argument('--export', action='store_true', help="Export a full backup of the database and exit.")
     parser.add_argument('--import', dest='import_path', metavar='PATH', help="Import a database from the specified path and start the app.")

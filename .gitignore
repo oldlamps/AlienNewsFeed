@@ -1,0 +1,35 @@
+# Rust directory
+Rust/
+
+# Byte-compiled / optimized / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging and distribution
+build/
+dist/
+*.egg-info/
+*.egg
+*.spec
+
+# Databases and local runtime data
+*.db
+*.sqlite3
+backups/
+
+# Logs and scratch files
+*.log
+scratch/
+debug.log
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
