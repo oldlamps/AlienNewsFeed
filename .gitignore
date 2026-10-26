@@ -16,7 +16,6 @@ build/
 dist/
 *.egg-info/
 *.egg
-*.spec
 
 # Databases and local runtime data
 *.db
