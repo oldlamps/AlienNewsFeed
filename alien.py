@@ -229,6 +229,7 @@ SUBREDDITS_STRING = "news+worldnews+politics+technology"
 FETCH_INTERVAL_SECONDS = 300
 SHOW_CLOCK = True
 VIDEO_PLAYER_PATH = "mpv"
+OLLAMA_MODEL = "llama3:latest"
 BLOCKED_DOMAINS = set()
 NEEDS_RESTART = False
 PAGE_JUMP = 10
@@ -258,7 +259,9 @@ def setup_config():
             'Theme': 'Default',
             'FetchInterval': '300',
             'ShowClock': 'true',
-            'BlockedDomains': ''
+            'BlockedDomains': '',
+            'VideoPlayerPath': 'mpv',
+            'OllamaModel': 'llama3:latest'
         }
         with open(CONFIG_FILE, 'w') as f: config.write(f)
     elif "[Profile:Main]" not in CONFIG_FILE.read_text():
@@ -279,12 +282,14 @@ def setup_config():
             'Theme': old_settings.get('theme', 'Default'),
             'FetchInterval': old_settings.get('fetchinterval', '300'),
             'ShowClock': old_settings.get('showclock', 'true'),
-            'BlockedDomains': old_settings.get('blockeddomains', '')
+            'BlockedDomains': old_settings.get('blockeddomains', ''),
+            'VideoPlayerPath': old_settings.get('videoplayerpath', 'mpv'),
+            'OllamaModel': old_settings.get('ollamamodel', 'llama3:latest')
         }
         with open(CONFIG_FILE, 'w') as f: config.write(f)
 
 def load_profile_settings():
-    global DB_FILE, SUBREDDITS_STRING, FETCH_INTERVAL_SECONDS, SHOW_CLOCK, BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH
+    global DB_FILE, SUBREDDITS_STRING, FETCH_INTERVAL_SECONDS, SHOW_CLOCK, BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH, OLLAMA_MODEL
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
     active_profile = config.get('Settings', 'ActiveProfile', fallback='Main')
@@ -300,6 +305,7 @@ def load_profile_settings():
     FETCH_INTERVAL_SECONDS = general_settings.getint('FetchInterval', 60)
     SHOW_CLOCK = general_settings.getboolean('ShowClock', True)
     VIDEO_PLAYER_PATH = general_settings.get('VideoPlayerPath', 'mpv')
+    OLLAMA_MODEL = general_settings.get('OllamaModel', 'llama3:latest')
     blocked_str = general_settings.get('BlockedDomains', '')
     BLOCKED_DOMAINS = {domain.strip() for domain in blocked_str.split(',') if domain.strip()}
     highlight_str = profile_settings.get('HighlightKeywords', '')
@@ -308,7 +314,10 @@ def load_profile_settings():
     MUTE_KEYWORDS = {kw.strip().lower() for kw in mute_str.split(',') if kw.strip()}
     return general_settings.get('Theme', 'Default'), active_profile
 
-def save_general_settings(theme_name, fetch_interval, show_clock, blocked_domains, video_player_path):
+def save_general_settings(theme_name, fetch_interval, show_clock, blocked_domains, video_player_path, ollama_model=None):
+    global OLLAMA_MODEL
+    if ollama_model is not None:
+        OLLAMA_MODEL = ollama_model
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
     blocked_domains_str = ','.join(sorted(list(blocked_domains)))
@@ -317,7 +326,8 @@ def save_general_settings(theme_name, fetch_interval, show_clock, blocked_domain
         'FetchInterval': str(fetch_interval),
         'ShowClock': str(show_clock),
         'BlockedDomains': blocked_domains_str,
-        'VideoPlayerPath': video_player_path
+        'VideoPlayerPath': video_player_path,
+        'OllamaModel': OLLAMA_MODEL
     }
     with open(CONFIG_FILE, 'w') as f: config.write(f)
 
@@ -595,6 +605,7 @@ class NewsFeedMenu:
         self.fetch_interval_setting = FETCH_INTERVAL_SECONDS
         self.show_clock_setting = SHOW_CLOCK
         self.video_player_path_setting = VIDEO_PLAYER_PATH
+        self.ollama_model_setting = OLLAMA_MODEL
         self.blocked_domains_setting = ','.join(sorted(list(BLOCKED_DOMAINS)))
         self.highlight_keywords_setting = ','.join(sorted(list(HIGHLIGHT_KEYWORDS)))
         self.mute_keywords_setting = ','.join(sorted(list(MUTE_KEYWORDS)))
@@ -1054,7 +1065,7 @@ class NewsFeedMenu:
                 self_ref.intel_chat_history.append(ai_msg)
                 
                 # Stream content into the last message in history
-                for chunk in ollama_client.query_ollama(prompt):
+                for chunk in ollama_client.query_ollama(prompt, model=OLLAMA_MODEL):
                     self_ref.intel_chat_history[-1]['text'] += chunk
                     self_ref.needs_redraw = True
                 
@@ -1201,7 +1212,7 @@ class NewsFeedMenu:
                 wrap_width = term_w - 6
 
                 # 4. Stream Response
-                for chunk in ollama_client.query_ollama(prompt):
+                for chunk in ollama_client.query_ollama(prompt, model=OLLAMA_MODEL):
                     self_ref.trend_data['summary'] += chunk
                     self_ref.trend_data['wrapped_lines'] = self_ref._format_ai_response(
                         self_ref.trend_data['summary'], wrap_width
@@ -1281,7 +1292,7 @@ class NewsFeedMenu:
                 wrap_width = ai_w - 3
 
                 # --- Consume the stream from Ollama ---
-                for chunk in ollama_client.query_ollama(prompt):
+                for chunk in ollama_client.query_ollama(prompt, model=OLLAMA_MODEL):
                     self_ref.intelligence_data['ai_summary'] += chunk
                     # Re-wrap the lines with the new, longer text
                     self_ref.intelligence_data['wrapped_ai_lines'] = self_ref._format_ai_response(
@@ -1365,7 +1376,7 @@ class NewsFeedMenu:
             self.intelligence_data['wrapped_ai_lines'] = []
             self.intel_ai_scroll_top = 0
             
-            for chunk in ollama_client.query_ollama(prompt):
+            for chunk in ollama_client.query_ollama(prompt, model=OLLAMA_MODEL):
                 self.intelligence_data['ai_summary'] += chunk
                 self.intelligence_data['wrapped_ai_lines'] = self._format_ai_response(
                     self.intelligence_data['ai_summary'], ai_wrap_width
@@ -1505,7 +1516,7 @@ class NewsFeedMenu:
                 wrap_width = pop_w - 6
 
                 # 3. Stream Response
-                for chunk in ollama_client.query_ollama(prompt):
+                for chunk in ollama_client.query_ollama(prompt, model=OLLAMA_MODEL):
                     self_ref.comment_analysis_data['summary'] += chunk
                     self_ref.comment_analysis_data['wrapped_lines'] = self_ref._format_ai_response(
                         self_ref.comment_analysis_data['summary'], wrap_width
@@ -1525,26 +1536,29 @@ class NewsFeedMenu:
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        pop_w, pop_h = 70, 17
+        pop_w, pop_h = 70, 18
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Settings")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
 
+        ollama_model_text = self.ollama_model_setting
         video_path_text = self.video_player_path_setting
         blocked_text = self.blocked_domains_setting
         highlight_text = self.highlight_keywords_setting
         mute_text = self.mute_keywords_setting
 
-        if self.settings_selected_index == 3: video_path_text += "_"
-        if self.settings_selected_index == 4: blocked_text += "_"
-        if self.settings_selected_index == 5: highlight_text += "_"
-        if self.settings_selected_index == 6: mute_text += "_"
+        if self.settings_selected_index == 3: ollama_model_text += "_"
+        if self.settings_selected_index == 4: video_path_text += "_"
+        if self.settings_selected_index == 5: blocked_text += "_"
+        if self.settings_selected_index == 6: highlight_text += "_"
+        if self.settings_selected_index == 7: mute_text += "_"
 
         clock_status = "< Enabled >" if self.show_clock_setting else "< Disabled >"
         options = [
             f"Refresh Time (s): < {self.fetch_interval_setting} >",
             f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
             f"Show Clock: {clock_status}",
+            f"Ollama Model: {ollama_model_text}",
             f"Video Player Path: {video_path_text}",
             f"Blocked Domains: {blocked_text}",
             f"Highlight Words: {highlight_text}",
@@ -1554,7 +1568,7 @@ class NewsFeedMenu:
             "Export Full Backup",
             "Import from Backup"
         ]
-        divider_pos = 7
+        divider_pos = 8
         for i, option in enumerate(options):
             row = start_y + 2 + i
             if i > divider_pos: row += 1
@@ -1571,12 +1585,12 @@ class NewsFeedMenu:
         help_footer_y = start_y + pop_h - 2
         sys.stdout.write(f"\x1b[{help_footer_y -1};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
 
-        
         help_strings = {
-            3: "Enter the path to your video player",
-            4: "Enter comma-separated domains (e.g., site.com,another.org)",
-            5: "Enter comma-separated words to highlight article titles",
-            6: "Enter comma-separated words to hide articles from the feed"
+            3: "Enter local Ollama model name (e.g., llama3:latest, mistral)",
+            4: "Enter the path to your video player executable (e.g., /usr/bin/mpv)",
+            5: "Enter comma-separated domains (e.g., site.com,another.org)",
+            6: "Enter comma-separated words to highlight article titles",
+            7: "Enter comma-separated words to hide articles from the feed"
         }
         help_text = help_strings.get(self.settings_selected_index, "")
         sys.stdout.write(f"\x1b[{help_footer_y};{start_x+2}H{pop_bg}{Colors.CYAN}{help_text.ljust(pop_w - 4)}")
@@ -1648,16 +1662,17 @@ class NewsFeedMenu:
         self.needs_redraw = True
 
     def handle_settings_input(self, key):
-        global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH
+        global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH, OLLAMA_MODEL
 
         if key == "ESC":
             self.blocked_domains_setting = self.blocked_domains_setting.strip(',')
             BLOCKED_DOMAINS = {d.strip() for d in self.blocked_domains_setting.split(',') if d.strip()}
             
             VIDEO_PLAYER_PATH = self.video_player_path_setting.strip()
+            OLLAMA_MODEL = self.ollama_model_setting.strip() or 'llama3:latest'
             
             save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting,
-                                 self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
+                                 self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH, OLLAMA_MODEL)
 
             self.highlight_keywords_setting = self.highlight_keywords_setting.strip(',')
             self.mute_keywords_setting = self.mute_keywords_setting.strip(',')
@@ -1673,7 +1688,7 @@ class NewsFeedMenu:
         if key == "UP":
             self.settings_selected_index = max(0, self.settings_selected_index - 1)
         elif key == "DOWN":
-            self.settings_selected_index = min(9, self.settings_selected_index + 1)
+            self.settings_selected_index = min(10, self.settings_selected_index + 1)
         else:
             idx = self.settings_selected_index
             if idx == 0:  # Refresh Time
@@ -1685,29 +1700,32 @@ class NewsFeedMenu:
                 self.theme = THEMES[self.theme_names[self.current_theme_index]]
             elif idx == 2:  # Show Clock
                 if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
-            elif idx == 3:  # Video Player Path
+            elif idx == 3:  # Ollama Model
+                if key == "BACKSPACE": self.ollama_model_setting = self.ollama_model_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.ollama_model_setting += key
+            elif idx == 4:  # Video Player Path
                 if key == "BACKSPACE": self.video_player_path_setting = self.video_player_path_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.video_player_path_setting += key
-            elif idx == 4:  # Blocked Domains
+            elif idx == 5:  # Blocked Domains
                 if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
-            elif idx == 5:  # Highlight Keywords
+            elif idx == 6:  # Highlight Keywords
                 if key == "BACKSPACE": self.highlight_keywords_setting = self.highlight_keywords_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.highlight_keywords_setting += key
-            elif idx == 6:  # Mute Keywords
+            elif idx == 7:  # Mute Keywords
                 if key == "BACKSPACE": self.mute_keywords_setting = self.mute_keywords_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.mute_keywords_setting += key
             elif key == "ENTER": # Handle action items at the bottom
-                if idx == 7:  # Export Bookmarks
+                if idx == 8:  # Export Bookmarks
                     export_bookmarks_to_html()
                     self.status_message, self.status_message_timer, self.is_settings_view = "Bookmarks exported to backups folder!", 50, False
-                elif idx == 8:  # Export Full Backup
+                elif idx == 9:  # Export Full Backup
                     backups_dir = CONFIG_DIR / "backups"
                     backups_dir.mkdir(exist_ok=True)
                     dest_path = backups_dir / f"backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
                     shutil.copy(DB_FILE, dest_path)
                     self.status_message, self.status_message_timer, self.is_settings_view = f"Backup saved to backups folder!", 50, False
-                elif idx == 9:  # Import from Backup
+                elif idx == 10:  # Import from Backup
                     self.is_settings_view = False
                     self.is_import_view = True
         self.needs_redraw = True
@@ -2039,28 +2057,31 @@ class NewsFeedMenu:
     def _draw_settings(self, items_data):
         self._draw(items_data, is_background=True)
         term_w, term_h = os.get_terminal_size()
-        pop_w, pop_h = 70, 17
+        pop_w, pop_h = 70, 18
         start_x, start_y = (term_w - pop_w) // 2, (term_h - pop_h) // 2
         self._draw_popup_border(start_x, start_y, pop_w, pop_h, "Settings")
         pop_bg, pop_fg = self.theme['popup_bg'], self.theme['popup_fg']
 
         # --- Variables to hold text being edited ---
+        ollama_model_text = self.ollama_model_setting
         video_path_text = self.video_player_path_setting
         blocked_text = self.blocked_domains_setting
         highlight_text = self.highlight_keywords_setting
         mute_text = self.mute_keywords_setting
 
         # --- Ensure the cursor logic indices are correct ---
-        if self.settings_selected_index == 3: video_path_text += "_"
-        if self.settings_selected_index == 4: blocked_text += "_"
-        if self.settings_selected_index == 5: highlight_text += "_"
-        if self.settings_selected_index == 6: mute_text += "_"
+        if self.settings_selected_index == 3: ollama_model_text += "_"
+        if self.settings_selected_index == 4: video_path_text += "_"
+        if self.settings_selected_index == 5: blocked_text += "_"
+        if self.settings_selected_index == 6: highlight_text += "_"
+        if self.settings_selected_index == 7: mute_text += "_"
 
         clock_status = "< Enabled >" if self.show_clock_setting else "< Disabled >"
         options = [
             f"Refresh Time (s): < {self.fetch_interval_setting} >",
             f"Color Theme: < {self.theme_names[self.current_theme_index]} >",
             f"Show Clock: {clock_status}",
+            f"Ollama Model: {ollama_model_text}",
             f"Video Player Path: {video_path_text}",
             f"Blocked Domains: {blocked_text}",
             f"Highlight Words: {highlight_text}",
@@ -2070,7 +2091,7 @@ class NewsFeedMenu:
             "Export Full Backup",
             "Import from Backup"
         ]
-        divider_pos = 7
+        divider_pos = 8
         for i, option in enumerate(options):
             row = start_y + 2 + i
             if i > divider_pos: row += 1
@@ -2088,10 +2109,11 @@ class NewsFeedMenu:
         sys.stdout.write(f"\x1b[{help_footer_y -1};{start_x}H{pop_bg}{pop_fg}├{'─'*(pop_w-2)}┤")
 
         help_strings = {
-            3: "Enter the full path to your video player executable (e.g., /usr/bin/mpv)",
-            4: "Enter comma-separated domains (e.g., site.com,another.org)",
-            5: "Enter comma-separated words to highlight article titles",
-            6: "Enter comma-separated words to hide articles from the feed"
+            3: "Enter local Ollama model name (e.g., llama3:latest, mistral)",
+            4: "Enter the full path to your video player executable (e.g., /usr/bin/mpv)",
+            5: "Enter comma-separated domains (e.g., site.com,another.org)",
+            6: "Enter comma-separated words to highlight article titles",
+            7: "Enter comma-separated words to hide articles from the feed"
         }
         help_text = help_strings.get(self.settings_selected_index, "")
         sys.stdout.write(f"\x1b[{help_footer_y};{start_x+2}H{pop_bg}{Colors.CYAN}{help_text.ljust(pop_w - 4)}")
@@ -2487,14 +2509,15 @@ class NewsFeedMenu:
         self.needs_redraw = True
         
     def handle_settings_input(self, key):
-        global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH
+        global BLOCKED_DOMAINS, HIGHLIGHT_KEYWORDS, MUTE_KEYWORDS, VIDEO_PLAYER_PATH, OLLAMA_MODEL
 
         if key == "ESC":
             self.blocked_domains_setting = self.blocked_domains_setting.strip(',')
             BLOCKED_DOMAINS = {d.strip() for d in self.blocked_domains_setting.split(',') if d.strip()}
             VIDEO_PLAYER_PATH = self.video_player_path_setting.strip()
+            OLLAMA_MODEL = self.ollama_model_setting.strip() or 'llama3:latest'
             save_general_settings(self.theme_names[self.current_theme_index], self.fetch_interval_setting,
-                                 self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH)
+                                 self.show_clock_setting, BLOCKED_DOMAINS, VIDEO_PLAYER_PATH, OLLAMA_MODEL)
 
             self.highlight_keywords_setting = self.highlight_keywords_setting.strip(',')
             self.mute_keywords_setting = self.mute_keywords_setting.strip(',')
@@ -2510,7 +2533,7 @@ class NewsFeedMenu:
         if key == "UP":
             self.settings_selected_index = max(0, self.settings_selected_index - 1)
         elif key == "DOWN":
-            self.settings_selected_index = min(9, self.settings_selected_index + 1)
+            self.settings_selected_index = min(10, self.settings_selected_index + 1)
         else:
             idx = self.settings_selected_index
             if idx == 0:  # Refresh Time
@@ -2522,30 +2545,32 @@ class NewsFeedMenu:
                 self.theme = THEMES[self.theme_names[self.current_theme_index]]
             elif idx == 2:  # Show Clock
                 if key == "LEFT" or key == "RIGHT": self.show_clock_setting = not self.show_clock_setting
-            # --- This block at index 3 correctly targets the video player setting ---
-            elif idx == 3:  # Video Player Path
+            elif idx == 3:  # Ollama Model
+                if key == "BACKSPACE": self.ollama_model_setting = self.ollama_model_setting[:-1]
+                elif len(key) == 1 and key.isprintable(): self.ollama_model_setting += key
+            elif idx == 4:  # Video Player Path
                 if key == "BACKSPACE": self.video_player_path_setting = self.video_player_path_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.video_player_path_setting += key
-            elif idx == 4:  # Blocked Domains
+            elif idx == 5:  # Blocked Domains
                 if key == "BACKSPACE": self.blocked_domains_setting = self.blocked_domains_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.blocked_domains_setting += key
-            elif idx == 5:  # Highlight Keywords
+            elif idx == 6:  # Highlight Keywords
                 if key == "BACKSPACE": self.highlight_keywords_setting = self.highlight_keywords_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.highlight_keywords_setting += key
-            elif idx == 6:  # Mute Keywords
+            elif idx == 7:  # Mute Keywords
                 if key == "BACKSPACE": self.mute_keywords_setting = self.mute_keywords_setting[:-1]
                 elif len(key) == 1 and key.isprintable(): self.mute_keywords_setting += key
             elif key == "ENTER":
-                if idx == 7:  # Export Bookmarks
+                if idx == 8:  # Export Bookmarks
                     export_bookmarks_to_html()
                     self.status_message, self.status_message_timer, self.is_settings_view = "Bookmarks exported!", 50, False
-                elif idx == 8:  # Export Full Backup
+                elif idx == 9:  # Export Full Backup
                     backups_dir = CONFIG_DIR / "backups"
                     backups_dir.mkdir(exist_ok=True)
                     dest_path = backups_dir / f"backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
                     shutil.copy(DB_FILE, dest_path)
                     self.status_message, self.status_message_timer, self.is_settings_view = f"Backup saved!", 50, False
-                elif idx == 9:  # Import from Backup
+                elif idx == 10:  # Import from Backup
                     self.is_settings_view = False
                     self.is_import_view = True
         self.needs_redraw = True

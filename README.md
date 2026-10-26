@@ -1,4 +1,4 @@
-# 👽 Alien News Feed
+# Alien News Feed
 
 A customizable, terminal-based news reader that aggregates articles from your favorite subreddits. Stay up-to-date with the latest news without ever leaving your terminal.
 
@@ -7,156 +7,183 @@ A customizable, terminal-based news reader that aggregates articles from your fa
 
 ## Features
 
-* **Multi-Profile Management**: You can create, rename, delete, and switch between different user profiles. Each profile can have its own unique list of subreddits and a separate database, keeping your "Work" and "Hobby" news feeds completely separate. <img width="90%" height="90%" alt="alien profile" src="https://github.com/user-attachments/assets/d8b302fd-f84e-45b9-874b-4af624ad6b3f" />
+* **Multi-Profile Management**: Create, rename, delete, and switch between different user profiles. Each profile can have its own unique list of subreddits and a separate database, keeping your "Work" and "Hobby" news feeds completely separate. <img width="90%" height="90%" alt="alien profile" src="https://github.com/user-attachments/assets/d8b302fd-f84e-45b9-874b-4af624ad6b3f" />
 
-* **Live Reddit Feed**: Fetches the latest articles from any combination of subreddits (e.g., `news+worldnews+technology`).
-* **Clean Terminal UI**: A smooth, keyboard-driven interface for browsing articles with multiple themes.
-* **Customizable Theming**: The application supports multiple color schemes (like Solarized, Nord, Dracula+) to change the look and feel of the interface.
+* **Live Reddit Feed**: Fetches the latest articles from any combination of subreddits (e.g., `news+worldnews+technology`) with automatic fallback to RSS feeds and modern desktop browser identification to prevent connection blocks.
+* **Clean Terminal UI**: A smooth, keyboard-driven interface with multiple color schemes (Default, Dark, Solarized, Nord, Dracula).
 * **Persistent Storage**: Uses an SQLite database to store articles, keeping track of read, new, and bookmarked items between sessions.
-* **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view. 
-* **Content Curation**:
+* **In-App Comment Viewer**: Read Reddit comment threads directly within the application in a collapsible tree view.
+* **Content Curation & Filtering**:
   * **Site Filtering**: Block unwanted sites on-the-fly from the action menu.
   * **Blocklist Management**: Manage a persistent list of excluded domains in the settings menu.
-* **Filtering and Searching**
-   * **Toggle a "bookmarks-only" view**
-   * **Search your entire article history for keywords.**
+  * **View Filter Menu**: Filter between all articles, bookmarked items, or unread articles.
+  * **Mark All as Seen**: Clear unread indicators across the entire feed with a single keypress (`m`).
+* **Search**: Live keyword search across your entire article history with a two-stage process for typing and navigating results.
 * **Flexible Actions**:
   * Open articles or comment threads in your default web browser.
-  * Instantly summarize any article with links to [Perplexity AI](https://www.perplexity.ai/ "null").
-  * Archive a page on [archive.is](https://archive.is "null"), copy its URL, or block its domain.
-* **Advanced Data Management**:
-  * **Full Backups**: Export and import the entire article database.
-  * **Bookmark Export**: Export all your bookmarked articles to a clean, styled, and portable HTML file.
-  * **Command-Line Tools**: Perform headless backup and restore operations without launching the UI.
-* **Article Management**:
-  * Bookmark articles to read later and filter the view to show only bookmarks.
-  * Live search with a two-stage process for both typing and navigating results.
-* **User-Friendly**:
-  * An in-app help screen provides a quick reference for all keybindings.
-  * Cross-platform support for Windows, macOS, and Linux.
+  * Launch video links directly in an external video player (such as mpv).
+  * Archive pages on [archive.is](https://archive.is) or copy URLs to clipboard.
+* **Data Management**:
+  * **Full Backups**: Export and import complete SQLite database backups.
+  * **Bookmark Export**: Export all your bookmarked articles to a styled HTML document.
+  * **Command-Line Tools**: Perform headless backup and restore operations via CLI flags.
+* **User-Friendly**: An in-app help screen provides a quick reference for all keybindings by pressing `h`.
+* **Intelligence View (Article Reader & Optional Local AI)**:
+  Press `a` or `→` on any article in the feed to open the Intelligence View:
+  * **Full Article Reader**: Extracts and renders the clean, distraction-free text of the linked article directly in your terminal, stripping out ads and website clutter.
+  * **Optional AI Integration**: The AI summary and analysis features in this view are completely optional. The article reader works standalone without any AI dependencies. If you optionally choose to run a local Ollama instance (`llama3`), you can generate streaming article summaries, extract key bulleted takeaways, run deep dives, and ask custom questions via an interactive chat pane.
+  * **Optional AI Comment & Trend Analysis**: Also includes optional community sentiment summaries in comment threads (`a`) and headline trend analysis across your subreddits (`t`) when Ollama is running.
 
 <img width="90%" height="90%" alt="alien comments" src="https://github.com/user-attachments/assets/2c5068e9-e563-4d79-a5dc-1725b91a8119" />
 
+
 ## Installation
 
-The easiest way to get started is to visit our [releases page](https://github.com/oldlamps/AlienNewsFeed/releases). I'll be updating reguarly with milestone releases as needed.
+### Pre-built Binary
+Download the compiled release binary from the [Releases page](https://github.com/oldlamps/AlienNewsFeed/releases). No Python installation or dependencies required.
 
-For the rest you need Python 3.6+ to run this script.
+### Running from Source
+Requires Python 3.10+.
 
-1. **Clone the repository (or download the script):**
-   ```
+1. **Clone the repository:**
+   ```bash
    git clone https://github.com/oldlamps/AlienNewsFeed.git
    cd AlienNewsFeed
-
-
    ```
-2. **Install the required dependency:** The script requires the `requests` library to fetch data from Reddit's API.
-   ```
-   pip install requests
-   pip install pid
 
-
+2. **Install dependencies:**
+   ```bash
+   pip install requests pid beautifulsoup4 trafilatura
    ```
+
+3. **(Optional) Local AI Setup:**
+   If you wish to use the optional AI summaries in the Intelligence View, install [Ollama](https://ollama.com/) and pull a model (the app connects to `http://localhost:11434` with `llama3:latest` by default):
+   ```bash
+   ollama run llama3
+   ```
+   *Note: This step is entirely optional. Alien News Feed and the Intelligence View article reader work fully without Ollama.*
+
 
 ## Usage
 
 ### Interactive Mode
 
-Navigate to the project directory and run the script to launch the interface:
+Run the application:
 
-```
+```bash
 python alien.py
-
-
+# or using the binary:
+./AlienNewsFeed
 ```
 
-The first time you run it, a configuration file (`config.ini`) and database (`news_feed.db`) will be created automatically in your system's user config directory:
+Configuration files (`config.ini`) and SQLite databases (`news_feed.db`) are saved automatically:
 
 * **Linux/macOS**: `~/.config/AlienNewsFeed/`
 * **Windows**: `%APPDATA%\AlienNewsFeed\`
 
-#### Keybindings
 
-Key(s)
+### Keybindings
 
-Action
+#### Main Feed
 
-`↑` / `↓`  Move selection up/down one article.
+| Key | Action |
+| :--- | :--- |
+| `↑` / `↓` | Move selection up / down one article |
+| `←` / `PgUp` | Jump up by one page (10 articles) |
+| `PgDn` | Jump down by one page (10 articles) |
+| `Home` / `End` | Jump to top / bottom of feed |
+| `a` or `→` | Open Intelligence View (Article reader + optional AI) |
+| `Enter` | Open the Action Menu for the selected article |
+| `b` | Toggle bookmark on selected article |
+| `m` | Mark all new articles as seen |
+| `c` | View Reddit comments in-app |
+| `Del` | Delete article permanently and add domain/URL to blocked list |
+| `/` | Enter search mode (press `Enter` to navigate results) |
+| `v` | Open View Filter menu (All Articles, Bookmarks, Unread) |
+| `p` | Open Profile Manager |
+| `s` | Open Settings menu |
+| `h` | Open Help / About screen |
+| `t` | Open Trend Analysis view (optional AI) |
+| `ESC` | Back, clear search, or show quit confirmation |
 
-`←` / `→`  Page up/down by 10 articles.
+#### Intelligence View (`a` or `→`)
 
-`Enter`  Open the Action Menu for the selected article.
+| Key | Action |
+| :--- | :--- |
+| `Tab` | Switch active focus between the **Article Reader** and the **AI Pane** |
+| `←` / `→` | Switch AI tabs (**Summary** / **Deep Dive** / **Chat**) |
+| `s` | Run concise article summary (optional AI) |
+| `k` | Extract key points as a bulleted list (optional AI) |
+| `Enter` | Trigger analysis (on Deep Dive tab) or Send question (on Chat tab) |
+| `↑` / `↓` | Scroll the active pane line by line |
+| `PgUp` / `PgDn` | Scroll the active pane by page |
+| `Home` / `End` | Jump to beginning or end of pane content |
+| `ESC` | Exit Intelligence View back to the main feed |
 
-`b` Bookmark or un-bookmark the selected article.
+#### In-App Comment Viewer (`c`)
 
-`c` View comments for the selected article.
-
-`v` Toggle the Bookmarks view.
-
-`/` Enter Search mode to filter articles.
-
-`s` Open the Settings menu.
-
-`h` Open the Help/About screen.
-
-`ESC` Go back, exit a menu, or quit the application.
+| Key | Action |
+| :--- | :--- |
+| `↑` / `↓` | Navigate comment list |
+| `Enter` | Collapse or expand comment thread |
+| `l` | Show popup list of external links in the selected comment |
+| `a` | Run comment sentiment/discussion analysis (optional AI) |
+| `ESC` | Exit back to main feed |
 
 #### Advanced Search
 
-The search function uses a two-stage process:
+1. Press `/` to begin typing a search query.
+2. Press `Enter` to commit the search. Focus shifts to the filtered results, allowing full navigation (`↑`/`↓`) and actions (`b`, `c`, `Enter`).
+3. Press `/` again to re-focus the search bar and update the query, or press `ESC` to clear.
 
-1. Press `/` to start typing your query.
-2. Press `Enter` to "commit" the search. This shifts focus to the filtered list, allowing you to use all navigation keys (`↑`/`↓`) and action keys (`b`, `c`, `Enter`) on the results.
-3. Press `/` again to re-focus the search box to edit your query.
 
 ### Command-Line Mode
 
-The application supports headless operations for easy scripting and backups.
+Headless operations for scripts and scheduled cron jobs:
 
-* **Export a full backup:**
-  ```
+* **Export full database backup:**
+  ```bash
   python alien.py --export
-
-
   ```
-  This will save a timestamped backup of your database to the `backups` folder and exit.
-* **Import from a backup:**
-  ```
-  python alien.py --import /path/to/your/backup.db
+  Saves a timestamped `.db` backup to the `backups` directory and exits.
 
-
+* **Import database from backup:**
+  ```bash
+  python alien.py --import /path/to/backup.db [--profile ProfileName]
   ```
-  This will prompt you with a warning. If you confirm, it will overwrite your current database with the backup file and then launch the application.
+
 
 ## Configuration
 
-You can customize the application by editing the `config.ini` file located in the configuration directory.
+Edit `config.ini` in your configuration directory to customize settings:
 
-* `Theme`: Set your preferred color theme (e.g., `Dracula`).
-* `FetchInterval`: Time in seconds between background fetches for new articles.
-* `Subreddits`: A `+` separated string of subreddits to pull from.
-* `ShowClock`: `true` or `false` to toggle the clock display.
-* `BlockedDomains`: A comma-separated list of domains to exclude from the feed (e.g., `badnews.com,another-site.net`).
+* `Theme`: Color scheme (`Default`, `Dark`, `Solarized`, `Nord`, `Dracula`).
+* `FetchInterval`: Background refresh interval in seconds (default `300`).
+* `Subreddits`: Plus-separated list of subreddits to pull from (e.g. `news+worldnews+politics+technology`).
+* `ShowClock`: Set `true` or `false` to toggle clock display.
+* `BlockedDomains`: Comma-separated list of domains to exclude from feeds.
+* `VideoPlayerPath`: Optional executable path for playing video links (e.g. `/usr/bin/mpv`).
+* `OllamaModel`: Local model name for optional AI analysis (e.g. `llama3:latest`, `mistral`).
 
-A restart is required for changes to `FetchInterval` and `Subreddits` to take effect.
 
- ### Clipboard Support 📋
+### Clipboard Support
 
- The "Copy URL to Clipboard" feature relies on external command-line utilities.
+The "Copy URL to Clipboard" action utilizes system utilities:
 
-   * **Windows** (`clip.exe`) and **macOS** (`pbcopy`): The necessary tools are included with the operating system by default.
+* **macOS** (`pbcopy`) and **Windows** (`clip.exe`): Included with the operating system.
+* **Linux** (`xclip`): Install via your distribution package manager if not present:
+  * Debian / Ubuntu / Mint: `sudo apt-get install xclip`
+  * Fedora / RHEL: `sudo dnf install xclip`
+  * Arch Linux: `sudo pacman -S xclip`
 
-   * **Linux** (`xclip`): This tool is often **not** installed by default. If the copy feature isn't working, you'll need to install it using your distribution's package manager.
 
-       * **Debian / Ubuntu / Mint:**
-         ```bash
-         sudo apt-get install xclip
-         ```
-       * **Fedora / CentOS / RHEL:**
-         ```bash
-         sudo dnf install xclip
-         ```
-       * **Arch Linux:**
-         ```bash
-         sudo pacman -S xclip
-         ```
+## Building from Source
+
+To build a standalone executable:
+
+```bash
+pip install pyinstaller
+pyinstaller AlienNewsFeed.spec --clean
+```
+
+The compiled binary will be placed in `dist/AlienNewsFeed`.

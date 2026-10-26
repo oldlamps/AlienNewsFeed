@@ -8,7 +8,7 @@ def query_ollama(prompt, model="llama3:latest", timeout=90):
     """
     url = "http://localhost:11434/api/generate"
     payload = {
-        "model": model,
+        "model": model.strip() if (model and model.strip()) else "llama3:latest",
         "prompt": prompt,
         "stream": True  # Enable streaming in the Ollama request payload
     }
